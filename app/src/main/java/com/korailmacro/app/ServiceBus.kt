@@ -5,6 +5,12 @@ import kotlinx.coroutines.flow.StateFlow
 
 /** In-process log/status bridge between ReservationService and MainActivity. */
 object ServiceBus {
+    data class Status(val title: String = "시작 대기", val detail: String = "", val options: ReservationOptions? = null)
+    val status = MutableStateFlow(Status())
+    val result = MutableStateFlow("")
+    fun update(title: String, detail: String = "", options: ReservationOptions? = status.value.options) {
+        status.value = Status(title, detail, options)
+    }
     private val lines = ArrayDeque<String>()
 
     private val _log = MutableStateFlow("대기 중...")
@@ -15,7 +21,7 @@ object ServiceBus {
 
     @Synchronized
     fun append(line: String) {
-        lines.addLast(line)
+        lines.addLast("${java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"))}  $line")
         while (lines.size > 300) lines.removeFirst()
         _log.value = lines.joinToString("\n")
     }

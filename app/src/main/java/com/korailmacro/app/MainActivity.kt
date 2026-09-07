@@ -1,9 +1,14 @@
 package com.korailmacro.app
 
 import android.Manifest
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
+import android.content.res.ColorStateList
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -11,828 +16,523 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
-import android.view.GestureDetector
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ArrayAdapter
-import android.widget.Button
-import android.widget.CalendarView
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.LinearLayout
-import android.widget.ListView
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
+import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
-import com.korailmacro.app.databinding.ActivityMainBinding
-import com.korailmacro.app.databinding.DialogSettingsBinding
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.button.MaterialButton
 import com.korailmacro.app.korail.KorailApi
 import com.korailmacro.app.korail.Stations
+import com.korailmacro.app.korail.Train
 import com.korailmacro.app.korail.TrainType
+import com.korailmacro.app.notify.TelegramNotifier
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.Calendar
-import kotlin.math.abs
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 
+/** Native Android views: one visible navigation model, one immutable run configuration. */
 class MainActivity : AppCompatActivity() {
-
-    private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: Prefs
-    private var selectedDate: String = ""
+    private lateinit var options: ReservationOptions
+    private lateinit var content: LinearLayout
+    private lateinit var footer: LinearLayout
+    private lateinit var scroll: ScrollView
+    private lateinit var startButton: MaterialButton
+    private val tabs = linkedMapOf<String, MaterialButton>()
+    private var currentPage = "home"
+    private var busyStarting = false
+    private var queryBusy = false
+    private var queryError = ""
+    private var queryTime = ""
+    private var queriedOptions: ReservationOptions? = null
+    private var trains = emptyList<Train>()
+    private var stateTitle: TextView? = null
+    private var stateDetail: TextView? = null
+    private var logView: TextView? = null
+    private var readyView: TextView? = null
+    private var errorView: TextView? = null
+    private var logExpanded = false
+    private var settingsDraft: SettingsDraft? = null
+    private var settingsBusy = false
+    private var settingsFeedback = ""
+    private var loginFeedback = ""
+    private var telegramFeedback = ""
+    private var verifiedCredentials: Triple<String, String, String>? = null
+    private val bg get() = color(R.color.bgColor)
+    private val surface get() = color(R.color.cardColor)
+    private val ink get() = color(R.color.textPrimary)
+    private val muted get() = color(R.color.textSecondary)
+    private val accent get() = color(R.color.colorAccent)
+    private val running get() = ServiceBus.running.value || busyStarting
 
-    // KORAIL-app-style picker palette — resolved lazily (not at construction time, before
-    // the Activity is attached to a Context) and re-resolved on every access so dialogs
-    // always match the currently active light/dark mode.
-    private val colorBg get() = ContextCompat.getColor(this, R.color.bgColor)
-    private val colorCard get() = ContextCompat.getColor(this, R.color.cardColor)
-    private val colorBorder get() = ContextCompat.getColor(this, R.color.borderColor)
-    private val colorAccent get() = ContextCompat.getColor(this, R.color.colorAccent)
-    private val colorTextPrimary get() = ContextCompat.getColor(this, R.color.textPrimary)
-    private val colorTextSecondary get() = ContextCompat.getColor(this, R.color.textSecondary)
-
-    /** 오른쪽 스와이프 -> 좌석 현황 화면. 관찰만 하고 소비는 하지 않으므로 기존 스크롤/탭 동작에 영향 없음. */
-    private val gestureDetector by lazy {
-        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
-                if (e1 == null) return false
-                val dx = e2.x - e1.x
-                val dy = e2.y - e1.y
-                if (dx > 150 && abs(dx) > abs(dy) && abs(velocityX) > 300) {
-                    startActivity(Intent(this@MainActivity, SeatStatusActivity::class.java))
-                    overridePendingTransition(android.R.anim.slide_in_left, android.R.anim.slide_out_right)
-                    return true
-                }
-                return false
-            }
-        })
-    }
-
-    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        gestureDetector.onTouchEvent(ev)
-        return super.dispatchTouchEvent(ev)
-    }
+    private data class SettingsDraft(var type: String, var id: String, var password: String,
+        var token: String, var chat: String, var interval: Int, var theme: Int)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
         prefs = Prefs(this)
+        options = prefs.draft
+        currentPage = savedInstanceState?.getString("page") ?: intent.getStringExtra("page") ?: "home"
+        if (savedInstanceState != null && savedInstanceState.containsKey("settingsType")) {
+            settingsDraft = SettingsDraft(savedInstanceState.getString("settingsType").orEmpty(),
+                savedInstanceState.getString("settingsId").orEmpty(), savedInstanceState.getString("settingsPassword").orEmpty(),
+                savedInstanceState.getString("settingsToken").orEmpty(), savedInstanceState.getString("settingsChat").orEmpty(),
+                savedInstanceState.getInt("settingsInterval", 5), savedInstanceState.getInt("settingsTheme", ThemePrefs.mode(this)))
+        }
+        buildShell()
+        showPage(currentPage)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { ServiceBus.running.collect {
+                    if (it) busyStarting = false
+                    renderPage()
+                } }
+                launch { ServiceBus.status.collect { updateStatus() } }
+                launch { ServiceBus.log.collect { logView?.text = it } }
+                launch { ServiceBus.result.collect { if (currentPage == "result") renderPage() } }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+        }
+    }
 
-        restoreFromPrefs()
-        requestNotificationPermissionIfNeeded()
+    override fun onResume() { super.onResume(); if (::prefs.isInitialized) updateReady() }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); showPage(intent.getStringExtra("page") ?: "home") }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("page", currentPage)
+        settingsDraft?.let {
+            outState.putString("settingsType", it.type); outState.putString("settingsId", it.id)
+            outState.putString("settingsPassword", it.password); outState.putString("settingsToken", it.token)
+            outState.putString("settingsChat", it.chat); outState.putInt("settingsInterval", it.interval)
+            outState.putInt("settingsTheme", it.theme)
+        }
+        super.onSaveInstanceState(outState)
+    }
 
-        binding.buttonSettings.setOnClickListener { showSettingsDialog() }
-        binding.buttonPickDate.setOnClickListener { showDateAndStartTimePicker() }
-        binding.editDepStation.setOnClickListener { showStationPicker(binding.editDepStation, isDeparture = true) }
-        binding.editArrStation.setOnClickListener { showStationPicker(binding.editArrStation, isDeparture = false) }
-        binding.editStartTime.setOnClickListener { showDateAndStartTimePicker() }
-        binding.editEndTime.setOnClickListener { showEndTimePicker() }
-        binding.editAdultCount.setOnClickListener { showAdultCountPicker() }
+    private fun color(id: Int) = ContextCompat.getColor(this, id)
+    private fun dp(n: Int) = (resources.displayMetrics.density * n).toInt()
+    private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    private fun rounded(fill: Int, radius: Int = 16) = GradientDrawable().apply { setColor(fill); cornerRadius = dp(radius).toFloat() }
+    private fun text(value: String, size: Float = 14f, bold: Boolean = false) = TextView(this).apply {
+        text = value; textSize = size; setTextColor(ink)
+        if (bold) setTypeface(typeface, Typeface.BOLD)
+        setPadding(0, dp(3), 0, dp(3))
+    }
+    private fun caption(value: String) = text(value, 12f).apply { setTextColor(muted) }
+    private fun button(value: String, primary: Boolean = false, action: () -> Unit) = MaterialButton(this).apply {
+        text = value; isAllCaps = false; textSize = 14f; cornerRadius = dp(10)
+        minHeight = dp(48); minimumWidth = 0
+        insetTop = dp(3); insetBottom = dp(3)
+        backgroundTintList = ColorStateList.valueOf(if (primary) accent else surface)
+        setTextColor(if (primary) android.graphics.Color.WHITE else ink)
+        setOnClickListener { action() }
+    }
+    private fun LinearLayout.add(view: View) = addView(view, LinearLayout.LayoutParams(-1, -2))
+    private fun panel(parent: LinearLayout = content, body: LinearLayout.() -> Unit): LinearLayout = column().apply {
+        background = rounded(surface); setPadding(dp(16), dp(12), dp(16), dp(12))
+        parent.addView(this, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+        body()
+    }
+    private fun row(parent: LinearLayout, vararg views: View) {
+        parent.add(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            views.forEachIndexed { index, v -> addView(v, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index > 0) marginStart = dp(8) }) }
+        })
+    }
+    private fun divider(parent: LinearLayout) { parent.addView(View(this).apply { setBackgroundColor(color(R.color.borderColor)) }, LinearLayout.LayoutParams(-1, dp(1)).apply { topMargin = dp(12); bottomMargin = dp(12) }) }
 
-        binding.buttonStart.setOnClickListener { onStartClicked() }
-        binding.buttonStop.setOnClickListener {
-            startService(Intent(this, ReservationService::class.java).apply {
-                action = ReservationService.ACTION_STOP
+    private fun buildShell() {
+        val root = column().apply { setBackgroundColor(bg) }
+        val header = column().apply { setPadding(dp(16), dp(12), dp(16), 0) }
+        header.add(caption("KORAIL MACRO / ${BuildConfig.VERSION_NAME}"))
+        header.add(text("코레일 예매 매크로", 21f, true))
+        val nav = LinearLayout(this)
+        listOf("home" to "예매 조건", "seats" to "좌석 현황", "result" to "예약 결과", "settings" to "설정").forEach { (key, label) ->
+            val b = button(label) { showPage(key) }.apply { textSize = 12f; setPadding(dp(2), 0, dp(2), 0) }
+            tabs[key] = b
+            nav.addView(b, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        header.add(nav); root.add(header)
+        content = column().apply { setPadding(dp(16), dp(12), dp(16), dp(16)) }
+        scroll = ScrollView(this).apply { isFillViewport = true; addView(content) }
+        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        footer = column().apply { setPadding(dp(16), dp(8), dp(16), dp(12)); setBackgroundColor(bg) }
+        footer.add(caption("빈 좌석 발견 시 자동 예약 · 결제는 직접 진행").apply { gravity = Gravity.CENTER })
+        startButton = button("자동 예약 시작", true) { toggleRun() }
+        footer.add(startButton); root.add(footer)
+        setContentView(root)
+    }
+
+    private fun showPage(page: String) {
+        currentPage = if (page in tabs) page else "home"
+        renderPage(); scroll.scrollTo(0, 0)
+        if (currentPage == "seats" && queriedOptions == null && !queryBusy) runQuery()
+    }
+    private fun renderPage() {
+        if (!::content.isInitialized) return
+        stateTitle = null; stateDetail = null; logView = null; readyView = null; errorView = null
+        content.removeAllViews()
+        tabs.forEach { (key, b) ->
+            b.isSelected = key == currentPage
+            b.setTextColor(if (key == currentPage) accent else muted)
+            b.strokeWidth = if (key == currentPage) dp(1) else 0
+            b.strokeColor = ColorStateList.valueOf(accent)
+        }
+        footer.visibility = if (currentPage == "home") View.VISIBLE else View.GONE
+        startButton.text = if (running) "자동 조회 중지" else "자동 예약 시작"
+        startButton.isEnabled = !busyStarting && ServiceBus.status.value.title != "중지 처리 중"
+        when (currentPage) { "home" -> renderHome(); "seats" -> renderSeats(); "result" -> renderResult(); "settings" -> renderSettings() }
+    }
+
+    private fun changeOptions(value: ReservationOptions, keepSelection: Boolean = false) {
+        options = if (keepSelection) value else value.copy(onlySelected = false, trainKeys = emptySet())
+        prefs.draft = options
+        if (!keepSelection) { queriedOptions = null; trains = emptyList(); queryTime = ""; queryError = "" }
+        renderPage()
+    }
+    private fun activeOptions() = if (ServiceBus.running.value) ServiceBus.status.value.options ?: options else options
+    private fun renderHome() {
+        panel {
+            stateTitle = text("", 16f, true).apply { setTextColor(accent) }; add(stateTitle!!)
+            stateDetail = caption(""); add(stateDetail!!)
+        }
+        updateStatus()
+        val editable = column()
+        content.add(editable)
+        panel(editable) {
+            val dep = button("출발역\n${options.departure.ifBlank { "선택" }}") { stationPicker(true) }
+            val arr = button("도착역\n${options.arrival.ifBlank { "선택" }}") { stationPicker(false) }
+            row(this, dep, arr)
+            add(button("⇄ 출발·도착 교환") { changeOptions(options.copy(departure = options.arrival, arrival = options.departure)) })
+            divider(this)
+            add(caption("가는 날"))
+            add(button(ReservationOptions.displayDate(options.date)) { datePicker() })
+            row(this,
+                button("출발시간 이후\n${ReservationOptions.displayTime(options.start)}") { timePicker(options.start) { changeOptions(options.copy(start = it)) } },
+                button("출발시간 까지\n${if (options.end.isBlank()) "선택 안함" else ReservationOptions.displayTime(options.end)}") {
+                    timePicker(options.end, true) { changeOptions(options.copy(end = it)) }
+                })
+            add(caption("‘까지’를 비우면 시작시각 이후 전체 열차를 조회합니다."))
+            errorView = text("", 13f).apply { setTextColor(color(R.color.colorError)); visibility = View.GONE }; add(errorView!!)
+            row(this, button("☆ 조건 저장") { saveFavorite() }, button("즐겨찾기") { loadFavorite() })
+        }
+        panel(editable) {
+            add(text("탑승 조건", 16f, true))
+            row(this, button("성인 ${options.adults}명") {
+                choose("성인 인원", (1..9).map { "${it}명" }, options.adults - 1) { changeOptions(options.copy(adults = it + 1)) }
+            }, button(ReservationOptions.seatLabel(options.seat)) {
+                val seats = listOf(KorailApi.SEAT_GENERAL, KorailApi.SEAT_SPECIAL, KorailApi.SEAT_ANY)
+                choose("좌석 등급", seats.map(ReservationOptions::seatLabel), seats.indexOf(options.seat)) { changeOptions(options.copy(seat = seats[it])) }
             })
-        }
-
-        binding.buttonIgnoreBattery.setOnClickListener { requestIgnoreBatteryOptimizations() }
-
-        binding.textTitle.text = "코레일 예매 매크로  v${BuildConfig.VERSION_NAME}"
-
-        // scrollLog sits inside the page's outer ScrollView; without this the parent
-        // steals vertical drags and the log never scrolls on its own.
-        binding.scrollLog.setOnTouchListener { v, _ ->
-            v.parent?.requestDisallowInterceptTouchEvent(true)
-            false
-        }
-        binding.buttonExpandLog.setOnClickListener { showFullScreenLog() }
-
-        lifecycleScope.launch {
-            ServiceBus.log.collect {
-                // Only follow new lines if the user was already at (or near) the bottom —
-                // otherwise every ~5s poll update yanks them back down while reading history.
-                val wasNearBottom = isScrollNearBottom(binding.scrollLog)
-                binding.textLog.text = it
-                if (wasNearBottom) {
-                    binding.scrollLog.post { binding.scrollLog.fullScroll(View.FOCUS_DOWN) }
+            if (options.seat == KorailApi.SEAT_ANY) add(caption("한 열차에 두 등급 모두 있으면 일반실을 먼저 예약합니다."))
+            TrainType.entries.chunked(2).forEach { types -> row(this, *types.map { type ->
+                CheckBox(this@MainActivity).apply {
+                    text = type.label; isChecked = type in options.types; minHeight = dp(48)
+                    setOnCheckedChangeListener { _, checked -> changeOptions(options.copy(types = if (checked) options.types + type else options.types - type)) }
                 }
-            }
+            }.toTypedArray()) }
+            divider(this)
+            add(caption("자동 조회 중지 · 열차 출발시간과 별개"))
+            val stop = if (options.stopAt.isNotBlank()) "오늘 ${ReservationOptions.displayTime(options.stopAt)}" else if (options.stopAfterMinutes > 0) "시작 ${options.stopAfterMinutes}분 후" else "직접 중지할 때까지"
+            add(button(stop) { choose("감시 종료", listOf("직접 중지", "30분 후", "1시간 후", "오늘 시각 지정")) {
+                when (it) {
+                    0 -> changeOptions(options.copy(stopAfterMinutes = 0, stopAt = ""), true)
+                    1 -> changeOptions(options.copy(stopAfterMinutes = 30, stopAt = ""), true)
+                    2 -> changeOptions(options.copy(stopAfterMinutes = 60, stopAt = ""), true)
+                    else -> timePicker("230000") { time -> changeOptions(options.copy(stopAt = time, stopAfterMinutes = 0), true) }
+                }
+            } })
+            add(caption(if (options.onlySelected) "감시 대상: 선택한 열차 ${options.trainKeys.size}개" else "감시 대상: 조건에 맞는 전체 열차"))
         }
+        setEnabledTree(editable, !running)
+        panel {
+            add(text("실행 준비", 16f, true))
+            readyView = caption(""); add(readyView!!)
+            if (!getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) add(button("배터리 최적화 제외 설정") { batterySettings() })
+            if (!NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()) add(button("알림 허용 설정") { notificationSettings() })
+        }
+        updateReady()
+        content.add(button(if (logExpanded) "실행 로그 접기" else "실행 로그 펼치기") { logExpanded = !logExpanded; renderPage() })
+        if (logExpanded) {
+            content.add(button("크게 보기") { showFullLog() })
+            logView = caption(ServiceBus.log.value).apply { typeface = Typeface.MONOSPACE; setTextIsSelectable(true) }
+            content.add(logView!!)
+        }
+    }
+    private fun updateStatus() {
+        val s = ServiceBus.status.value
+        if (busyStarting && s.title == "시작할 수 없음") { busyStarting = false; renderPage(); return }
+        stateTitle?.text = if (s.title == "시작 대기") prefs.lastRunStatus else s.title
+        stateDetail?.text = if (running) "${s.detail}\n적용 조건: ${activeOptions().summary()}" else "${s.detail}\n조회 간격 ${prefs.pollIntervalSec}초"
+        if (::startButton.isInitialized) startButton.isEnabled = !busyStarting && s.title != "중지 처리 중"
+    }
+    private fun updateReady() {
+        readyView?.text = listOf(
+            if (prefs.loginVerified) "로그인 확인 ✓" else "로그인 확인 필요 · 설정에서 확인",
+            if (NotificationManagerCompat.from(this).areNotificationsEnabled()) "알림 허용 ✓" else "알림 권한 필요",
+            if (getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) "배터리 설정 ✓" else "배터리 최적화 제외 필요"
+        ).joinToString("\n")
+    }
+    private fun setEnabledTree(view: View, enabled: Boolean) {
+        view.isEnabled = enabled
+        if (view is ViewGroup) for (i in 0 until view.childCount) setEnabledTree(view.getChildAt(i), enabled)
+    }
+    private fun toggleRun() {
+        if (running) { startService(Intent(this, ReservationService::class.java).setAction(ReservationService.ACTION_STOP)); return }
+        val error = options.error() ?: if (prefs.loginId.isBlank() || prefs.password.isBlank()) "설정에서 로그인 정보를 입력하세요." else null
+        if (error != null) { errorView?.apply { text = error; visibility = View.VISIBLE; requestRectangleOnScreen(android.graphics.Rect(0, 0, width, height)) }; return }
+        prefs.draft = options; prefs.pushRecentRoute(options.departure, options.arrival)
+        ServiceBus.clear(); busyStarting = true; renderPage()
+        try { ContextCompat.startForegroundService(this, Intent(this, ReservationService::class.java).putExtra(ReservationService.EXTRA_OPTIONS, options.json())) }
+        catch (e: Exception) { busyStarting = false; ServiceBus.update("시작 실패", e.message.orEmpty()); renderPage() }
+    }
+
+    private fun choose(title: String, values: List<String>, selected: Int = -1, action: (Int) -> Unit) {
+        AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(values.toTypedArray(), selected) { d, which -> d.dismiss(); action(which) }.setNegativeButton("닫기", null).show()
+    }
+    private fun datePicker() {
+        val day = runCatching { LocalDate.parse(options.date, DateTimeFormatter.BASIC_ISO_DATE) }.getOrDefault(LocalDate.now())
+        DatePickerDialog(this, { _, y, m, d -> changeOptions(options.copy(date = LocalDate.of(y, m + 1, d).format(DateTimeFormatter.BASIC_ISO_DATE))) }, day.year, day.monthValue - 1, day.dayOfMonth).apply {
+            datePicker.minDate = System.currentTimeMillis() - 1000
+        }.show()
+    }
+    private fun timePicker(value: String, clearable: Boolean = false, action: (String) -> Unit) {
+        val time = ReservationOptions.parseTime(value) ?: LocalTime.now().withSecond(0)
+        val dialog = TimePickerDialog(this, { _, hour, minute -> action("%02d%02d00".format(hour, minute)) }, time.hour, time.minute, true)
+        if (clearable) dialog.setButton(TimePickerDialog.BUTTON_NEUTRAL, "선택 안함") { _, _ -> action("") }
+        dialog.show()
+    }
+    private fun stationPicker(departure: Boolean) {
+        var stationDialog: AlertDialog? = null
+        val root = column().apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val search = EditText(this).apply { hint = "역 이름 또는 초성 검색"; setSingleLine() }
+        root.add(search)
+        val recent = prefs.recentRoutes()
+        if (recent.isNotEmpty()) root.add(button("최근 구간") {
+            choose("최근 구간", recent.map { "${it.first} → ${it.second}" }) { index ->
+                changeOptions(options.copy(departure = recent[index].first, arrival = recent[index].second))
+                stationDialog?.dismiss()
+            }
+        })
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, Stations.NAMES.toMutableList())
+        val list = ListView(this).apply { this.adapter = adapter }
+        val letters = HorizontalScrollView(this)
+        val lettersRow = LinearLayout(this)
+        Stations.AVAILABLE_INITIALS.forEach { initial -> lettersRow.addView(button(initial.toString()) {
+            search.setText("")
+            list.setSelection(Stations.firstIndexOf(initial))
+        }) }
+        letters.addView(lettersRow); root.add(letters)
+        root.addView(list, LinearLayout.LayoutParams(-1, dp(280)))
+        val dialog = AlertDialog.Builder(this).setTitle(if (departure) "출발역 선택" else "도착역 선택").setView(root).setNegativeButton("닫기", null).create()
+        stationDialog = dialog
+        list.setOnItemClickListener { _, _, position, _ ->
+            val station = adapter.getItem(position).orEmpty()
+            changeOptions(if (departure) options.copy(departure = station) else options.copy(arrival = station)); dialog.dismiss()
+        }
+        search.addTextChangedListener(watcher { query -> adapter.clear(); adapter.addAll(Stations.NAMES.filter { Stations.matches(it, query) }) })
+        dialog.show()
+    }
+    private fun watcher(action: (String) -> Unit) = object : TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { action(s?.toString().orEmpty()) }
+        override fun afterTextChanged(s: Editable?) {}
+    }
+    private fun saveFavorite() {
+        val name = EditText(this).apply { hint = "예: 퇴근 KTX"; setSingleLine() }
+        AlertDialog.Builder(this).setTitle("조건 즐겨찾기 저장").setView(name).setNegativeButton("취소", null)
+            .setPositiveButton("저장") { _, _ -> if (name.text.isNotBlank()) { prefs.saveFavorite(name.text.toString().trim(), options); toast("조건을 저장했습니다.") } }.show()
+    }
+    private fun loadFavorite() {
+        val favorites = prefs.favorites()
+        if (favorites.isEmpty()) { toast("저장된 조건이 없습니다."); return }
+        choose("즐겨찾기", favorites.map { it.first }) { i ->
+            val (name, value) = favorites[i]
+            AlertDialog.Builder(this).setTitle(name).setMessage(value.summary()).setPositiveButton("불러오기") { _, _ ->
+                changeOptions(value.copy(date = options.date, onlySelected = false, trainKeys = emptySet()))
+                toast("조건을 불러왔습니다. 가는 날을 확인하세요.")
+            }.setNeutralButton("삭제") { _, _ -> prefs.removeFavorite(name) }.setNegativeButton("닫기", null).show()
+        }
+    }
+
+    private fun runQuery() {
+        if (queryBusy) return
+        val config = activeOptions()
+        val error = config.error(checkSelection = false, checkPast = !running) ?: if (prefs.loginId.isBlank() || prefs.password.isBlank()) "설정에서 로그인 정보를 입력하세요." else null
+        if (error != null) { queryError = error; if (currentPage == "seats") renderPage(); return }
+        val loginType = prefs.loginType; val id = prefs.loginId; val password = prefs.password
+        queryBusy = true; queryError = ""; queriedOptions = config; trains = emptyList(); queryTime = ""
+        if (currentPage == "seats") renderPage()
         lifecycleScope.launch {
-            ServiceBus.running.collect { running ->
-                binding.buttonStart.isEnabled = !running
-                binding.buttonStop.isEnabled = running
-            }
-        }
-    }
-
-    private fun restoreFromPrefs() {
-        binding.editDepStation.setText(prefs.depStation)
-        binding.editArrStation.setText(prefs.arrStation)
-        // Stored as HHmmss; the pickers and 시작 handler work in HHmm.
-        binding.editStartTime.setText(prefs.startTime.take(4))
-        binding.editEndTime.setText(prefs.endTime.take(4))
-        binding.editAdultCount.setText(prefs.adultCount.toString())
-
-        selectedDate = prefs.travelDate
-        if (selectedDate.isNotBlank()) {
-            binding.textSelectedDate.text = "선택된 날짜: $selectedDate"
-        }
-
-        when (prefs.seatType) {
-            KorailApi.SEAT_SPECIAL -> binding.rbSpecialSeat.isChecked = true
-            KorailApi.SEAT_ANY -> binding.rbAnySeat.isChecked = true
-            else -> binding.rbGeneralSeat.isChecked = true
-        }
-
-        val types = prefs.trainTypes
-        binding.cbKtx.isChecked = TrainType.KTX in types
-        binding.cbItxSaemaeul.isChecked = TrainType.ITX_SAEMAEUL in types
-        binding.cbMugunghwa.isChecked = TrainType.MUGUNGHWA in types
-        binding.cbItxCheongchun.isChecked = TrainType.ITX_CHEONGCHUN in types
-    }
-
-    /** Logs in immediately (independent of the reservation loop) so the user gets a pass/fail answer before configuring the rest of the form. */
-    private fun runLoginTest(loginType: String, loginId: String, password: String, button: Button) {
-        prefs.loginType = loginType
-        prefs.loginId = loginId
-        prefs.password = password
-
-        button.isEnabled = false
-        ServiceBus.append("로그인 확인 중...")
-        lifecycleScope.launch(Dispatchers.IO) {
             try {
-                KorailApi().login(loginType, loginId, password)
-                ServiceBus.append("✅ 로그인 성공")
-            } catch (e: Exception) {
-                ServiceBus.append("❌ 로그인 실패: ${e.message}")
-            } finally {
-                runOnUiThread { button.isEnabled = true }
-            }
-        }
-    }
-
-    /** 환경설정: 로그인, 새로고침 간격, 다크모드, 텔레그램 알림 — 예매 조건과 분리된 설정들을 한 곳에 모은 다이얼로그. */
-    private fun showSettingsDialog() {
-        val db = DialogSettingsBinding.inflate(layoutInflater)
-
-        db.editLoginId.setText(prefs.loginId)
-        db.editPassword.setText(prefs.password)
-        when (prefs.loginType) {
-            KorailApi.LOGIN_TYPE_MEMBERSHIP -> db.rbMembership.isChecked = true
-            KorailApi.LOGIN_TYPE_PHONE -> db.rbPhone.isChecked = true
-            else -> db.rbEmail.isChecked = true
-        }
-        db.editTelegramToken.setText(prefs.telegramToken)
-        db.editTelegramChatId.setText(prefs.telegramChatId)
-        db.switchDarkMode.isChecked = ThemePrefs.isDarkMode(this)
-
-        val intervalOptions = intArrayOf(1, 2, 3, 4, 5, 10, 15, 30, 60)
-        var pickedInterval = intervalOptions.minByOrNull { kotlin.math.abs(it - prefs.pollIntervalSec) } ?: 5
-
-        lateinit var refreshIntervalChips: () -> Unit
-        refreshIntervalChips = {
-            db.pollIntervalChipRow.removeAllViews()
-            for (sec in intervalOptions) {
-                val c = chip("${sec}초", selected = sec == pickedInterval) {
-                    pickedInterval = sec
-                    refreshIntervalChips()
+                val result = withContext(Dispatchers.IO) {
+                    val api = KorailApi(); api.login(loginType, id, password)
+                    api.searchTrain(config.departure, config.arrival, config.date, config.start, config.adults, config.end).filter(config::includes)
                 }
-                db.pollIntervalChipRow.addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = dp(6)
-                })
-            }
+                // Ignore a response if the user edited the form while this independent request was running.
+                if (queriedOptions == config) { trains = result; queryTime = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")) }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { if (queriedOptions == config) queryError = "조회 실패: ${e.message}" }
+            finally { queryBusy = false; if (currentPage == "seats") renderPage() }
         }
-        refreshIntervalChips()
-
-        db.switchDarkMode.setOnCheckedChangeListener { _, isChecked ->
-            ThemePrefs.setDarkMode(this, isChecked)
-            // Triggers an Activity recreate, which dismisses this dialog as a side effect — that's fine.
-            AppCompatDelegate.setDefaultNightMode(
-                if (isChecked) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
-            )
-        }
-
-        db.buttonTestLogin.setOnClickListener {
-            val loginId = db.editLoginId.text.toString().trim()
-            val password = db.editPassword.text.toString()
-            if (loginId.isBlank() || password.isBlank()) {
-                Toast.makeText(this, "아이디/비밀번호를 입력하세요", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            val loginType = when (db.radioGroupLoginType.checkedRadioButtonId) {
-                db.rbMembership.id -> KorailApi.LOGIN_TYPE_MEMBERSHIP
-                db.rbPhone.id -> KorailApi.LOGIN_TYPE_PHONE
-                else -> KorailApi.LOGIN_TYPE_EMAIL
-            }
-            runLoginTest(loginType, loginId, password, db.buttonTestLogin)
-        }
-
-        val dialog = AlertDialog.Builder(this).setView(db.root).create()
-
-        db.buttonSaveSettings.setOnClickListener {
-            val loginId = db.editLoginId.text.toString().trim()
-            val password = db.editPassword.text.toString()
-            prefs.loginType = when (db.radioGroupLoginType.checkedRadioButtonId) {
-                db.rbMembership.id -> KorailApi.LOGIN_TYPE_MEMBERSHIP
-                db.rbPhone.id -> KorailApi.LOGIN_TYPE_PHONE
-                else -> KorailApi.LOGIN_TYPE_EMAIL
-            }
-            prefs.loginId = loginId
-            prefs.password = password
-            prefs.pollIntervalSec = pickedInterval
-            prefs.telegramToken = db.editTelegramToken.text.toString().trim()
-            prefs.telegramChatId = db.editTelegramChatId.text.toString().trim()
-            Toast.makeText(this, "환경설정 저장됨", Toast.LENGTH_SHORT).show()
-            dialog.dismiss()
-        }
-
-        dialog.show()
     }
-
-    /** Full-screen, auto-scrolling view of the run log — same content as the inline panel, but readable. */
-    private fun showFullScreenLog() {
-        val scroll = ScrollView(this).apply {
-            setBackgroundColor(Color.parseColor("#111111"))
-            isFillViewport = true
+    private fun renderSeats() {
+        content.add(text(if (running) "실행 중인 조건으로 조회" else "현재 조건으로 조회", 17f, true))
+        content.add(caption((queriedOptions ?: activeOptions()).summary()))
+        content.add(button(if (queryBusy) "조회 중…" else "다시 조회") { runQuery() }.apply { isEnabled = !queryBusy })
+        if (queryError.isNotBlank()) content.add(text(queryError).apply { setTextColor(color(R.color.colorError)) })
+        if (queryTime.isNotBlank()) content.add(caption("마지막 조회 $queryTime · ${trains.size}개 열차"))
+        if (!queryBusy && queryError.isBlank() && trains.isEmpty()) content.add(text("조건에 맞는 열차가 없습니다."))
+        val selection = CheckBox(this).apply {
+            text = "선택한 열차만 감시"; isChecked = activeOptions().onlySelected; minHeight = dp(48); isEnabled = !running && !queryBusy && queriedOptions != null
+            setOnCheckedChangeListener { _, checked -> changeOptions(options.copy(onlySelected = checked), true) }
         }
-        val text = TextView(this).apply {
-            setTextColor(Color.parseColor("#00FF66"))
-            typeface = android.graphics.Typeface.MONOSPACE
-            textSize = 13f
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            setTextIsSelectable(true)
-            this.text = ServiceBus.log.value
-        }
-        scroll.addView(text)
-
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("실행 로그")
-            .setView(scroll)
-            .setPositiveButton("닫기", null)
-            .create()
-
-        val job = lifecycleScope.launch {
-            ServiceBus.log.collect {
-                val atBottom = isScrollNearBottom(scroll)
-                text.text = it
-                if (atBottom) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
-            }
-        }
-        dialog.setOnDismissListener { job.cancel() }
-        dialog.show()
-        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
-    }
-
-    /** KORAIL-style chip picker for 성인 인원수 (1~9명), tap-to-select-and-dismiss like the end-time picker. */
-    private fun showAdultCountPicker() {
-        val pad = dp(16)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(colorBg)
-            setPadding(pad, pad, pad, pad)
-        }
-        root.addView(dialogTitle("인원수 선택"))
-
-        val current = binding.editAdultCount.text.toString().trim().toIntOrNull() ?: 1
-
-        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        scroll.addView(row)
-        root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(16)
-        })
-
-        lateinit var dialog: AlertDialog
-        for (n in 1..9) {
-            val c = chip("${n}명", selected = n == current) {
-                binding.editAdultCount.setText(n.toString())
-                dialog.dismiss()
-            }
-            row.addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                marginEnd = dp(6)
+        content.add(selection)
+        content.add(caption(if (activeOptions().onlySelected) "${activeOptions().trainKeys.size}개 선택 · 빈 선택으로는 시작할 수 없습니다." else "현재 조건에 맞는 전체 열차를 감시합니다."))
+        trains.forEach { train -> panel {
+            add(text("${train.trainTypeName} ${train.trainNo}", 16f, true))
+            add(text("${ReservationOptions.displayTime(train.depTime)} → ${ReservationOptions.displayTime(train.arrTime)}", 23f, true))
+            add(caption("${train.depStationName} → ${train.arrStationName}"))
+            row(this, text("일반실 ${if (train.hasGeneralSeat) "가능" else "매진"}").apply { setTextColor(if (train.hasGeneralSeat) color(R.color.colorSuccess) else muted) },
+                text("특실 ${if (train.hasSpecialSeat) "가능" else "매진"}").apply { setTextColor(if (train.hasSpecialSeat) color(R.color.colorSuccess) else muted) })
+            val key = ReservationOptions.key(train)
+            add(CheckBox(this@MainActivity).apply {
+                text = "이 열차 감시"; minHeight = dp(48); isChecked = key in activeOptions().trainKeys
+                isEnabled = !running && options.onlySelected
+                setOnCheckedChangeListener { _, checked -> changeOptions(options.copy(trainKeys = if (checked) options.trainKeys + key else options.trainKeys - key), true) }
             })
-        }
-
-        dialog = AlertDialog.Builder(this).setView(root).create()
-        dialog.show()
-        dialog.window?.setBackgroundDrawable(GradientDrawable().apply { setColor(colorBg) })
+        } }
+        content.add(caption("이 화면은 조회 전용입니다. 자동 예약은 예매 조건에서 시작하세요."))
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    private fun ymdDashed(yyyymmdd: String): String =
-        "${yyyymmdd.substring(0, 4)}-${yyyymmdd.substring(4, 6)}-${yyyymmdd.substring(6, 8)}"
-
-    /**
-     * Non-null, human-readable reason when a [date] (yyyyMMdd) + [time] (HHmm/HHmmss)
-     * departure window is already in the past. KORAIL answers these with an opaque
-     * "조회 실패", so we detect it up front and state exactly what's wrong instead.
-     */
-    private fun pastDepartureReason(date: String, time: String): String? {
-        if (date.length != 8) return null
-        val now = Calendar.getInstance()
-        val today = "%04d%02d%02d".format(
-            now.get(Calendar.YEAR), now.get(Calendar.MONTH) + 1, now.get(Calendar.DAY_OF_MONTH)
-        )
-        if (date < today) {
-            return "지난 날짜는 예매할 수 없습니다.\n오늘 ${ymdDashed(today)} / 선택 ${ymdDashed(date)}"
-        }
-        if (date == today) {
-            val nowHm = "%02d%02d".format(now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE))
-            val pickedHm = time.padEnd(4, '0').take(4)
-            if (pickedHm < nowHm) {
-                return "오늘 이미 지난 시각입니다 (선택 ${pickedHm.take(2)}:${pickedHm.drop(2)}).\n" +
-                    "현재 ${nowHm.take(2)}:${nowHm.drop(2)} 이후로 시작시각을 정하세요."
+    private fun renderResult() {
+        val result = runCatching { JSONObject(ServiceBus.result.value.ifBlank { prefs.lastResult }) }.getOrNull()
+        if (result == null) { panel { add(text("아직 예약 결과가 없습니다.", 17f, true)); add(caption("자동 예약에 성공하면 마지막 결과를 여기에 보관합니다.")) }; return }
+        panel {
+            add(text("✓ 예약이 완료됐어요", 22f, true).apply { setTextColor(color(R.color.colorSuccess)) })
+            add(caption("마지막 예약 결과 · ${result.optString("createdAt").replace('T', ' ').take(19)}"))
+            divider(this)
+            listOf("구간" to result.optString("route"), "출발" to "${ReservationOptions.displayDate(result.optString("date"))} ${ReservationOptions.displayTime(result.optString("time"))}",
+                "열차 / 좌석" to "${result.optString("train")} / ${result.optString("seat")}", "인원" to "성인 ${result.optInt("adults")}명", "예약번호" to result.optString("pnr")).forEach { (label, value) ->
+                add(caption(label)); add(text(value, 16f, true))
             }
+            add(button("예약번호 복사") { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("예약번호", result.optString("pnr"))); toast("예약번호를 복사했습니다.") })
+            divider(this); add(text("직접 결제가 필요해요", 17f, true))
+            add(text("코레일 앱에서 예약 내역과 정확한 결제 기한을 확인하세요."))
+            add(caption("텔레그램: ${result.optString("telegram")}"))
+            add(caption("이 결과는 예약 성공 당시 기록입니다. 이후 결제·취소 상태는 코레일에서 확인하세요."))
         }
-        return null
     }
 
-    private fun isScrollNearBottom(scrollView: ScrollView): Boolean {
-        val child = scrollView.getChildAt(0) ?: return true
-        val diff = child.bottom - (scrollView.height + scrollView.scrollY)
-        return diff <= dp(24)
-    }
-
-    private fun roundedDrawable(fillColor: Int, strokeColor: Int? = null, radiusDp: Int = 10): GradientDrawable =
-        GradientDrawable().apply {
-            cornerRadius = dp(radiusDp).toFloat()
-            setColor(fillColor)
-            if (strokeColor != null) setStroke(dp(1), strokeColor)
-        }
-
-    /** A KORAIL-style pill chip (역/시간대/자음 tabs all reuse this). */
-    private fun chip(text: String, selected: Boolean, onClick: () -> Unit): TextView =
-        TextView(this).apply {
-            this.text = text
-            setTextColor(if (selected) Color.WHITE else colorTextSecondary)
-            textSize = 14f
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            background = roundedDrawable(
-                if (selected) colorAccent else colorCard,
-                if (selected) colorAccent else colorBorder,
-                18
-            )
-            setOnClickListener { onClick() }
-        }
-
-    private fun dialogTitle(text: String): TextView = TextView(this).apply {
-        this.text = text
-        setTextColor(colorTextPrimary)
-        textSize = 18f
-        setTypeface(typeface, android.graphics.Typeface.BOLD)
-    }
-
-    /** Real KORAIL station names only, chosen from [Stations.NAMES] — no free-text entry. Styled after the KORAIL app's own 역 선택 screen: search box (with 초성 support), recent-route chips, and 자음 jump tabs. */
-    private fun showStationPicker(target: EditText, isDeparture: Boolean) {
-        val pad = dp(16)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(colorBg)
-            setPadding(pad, pad, pad, pad)
-        }
-        root.addView(dialogTitle(if (isDeparture) "출발역 선택" else "도착역 선택"))
-
-        val search = EditText(this).apply {
-            hint = "역 이름 또는 초성 입력"
-            setHintTextColor(colorTextSecondary)
-            setTextColor(colorTextPrimary)
-            background = roundedDrawable(colorCard, colorBorder)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            setSingleLine()
-        }
-        root.addView(search, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(12)
-        })
-
-        val recentRoutes = prefs.recentRoutes()
-        lateinit var dialog: AlertDialog
-        if (recentRoutes.isNotEmpty()) {
-            val recentScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-            val recentRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            recentRoutes.forEach { (dep, arr) ->
-                val c = chip("$dep → $arr", selected = false) {
-                    binding.editDepStation.setText(dep)
-                    binding.editArrStation.setText(arr)
-                    dialog.dismiss()
-                }
-                recentRow.addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = dp(8)
-                })
-            }
-            recentScroll.addView(recentRow)
-            root.addView(recentScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(10)
+    private fun renderSettings() {
+        val draft = settingsDraft ?: SettingsDraft(prefs.loginType, prefs.loginId, prefs.password, prefs.telegramToken, prefs.telegramChatId,
+            prefs.pollIntervalSec, ThemePrefs.mode(this)).also { settingsDraft = it }
+        panel {
+            add(text("코레일 로그인", 17f, true))
+            val types = listOf(KorailApi.LOGIN_TYPE_EMAIL, KorailApi.LOGIN_TYPE_MEMBERSHIP, KorailApi.LOGIN_TYPE_PHONE)
+            add(button(listOf("이메일", "회원번호", "휴대전화")[types.indexOf(draft.type).coerceAtLeast(0)]) {
+                choose("로그인 방식", listOf("이메일", "회원번호", "휴대전화"), types.indexOf(draft.type)) { draft.type = types[it]; loginFeedback = ""; renderPage() }
             })
+            field(this, "아이디", draft.id, if (draft.type == KorailApi.LOGIN_TYPE_EMAIL) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS else InputType.TYPE_CLASS_PHONE) { draft.id = it; loginFeedback = "" }
+            field(this, "비밀번호", draft.password, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD) { draft.password = it; loginFeedback = "" }
+            add(button(if (settingsBusy) "확인 중…" else "로그인 확인") { testLogin(draft) }.apply { isEnabled = !settingsBusy && !running })
+            add(caption(loginFeedback.ifBlank { "입력한 계정으로 확인한 후 저장하세요." }))
         }
-
-        val tabScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        tabScroll.addView(tabRow)
-        root.addView(tabScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(10)
-        })
-
-        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, Stations.NAMES.toMutableList()) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val view = super.getView(position, convertView, parent) as TextView
-                view.setTextColor(colorTextPrimary)
-                view.setBackgroundColor(colorBg)
-                view.setPadding(dp(4), dp(14), dp(4), dp(14))
-                return view
-            }
+        panel {
+            add(text("알림 연결", 17f, true))
+            field(this, "텔레그램 봇 토큰", draft.token, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD) { draft.token = it }
+            field(this, "Chat ID", draft.chat, InputType.TYPE_CLASS_TEXT) { draft.chat = it }
+            add(button("테스트 알림 보내기") { testTelegram(draft) }.apply { isEnabled = !settingsBusy })
+            add(caption(telegramFeedback.ifBlank { "예약 전에 알림 연결을 확인할 수 있습니다." }))
         }
-        val listView = ListView(this).apply {
-            this.adapter = adapter
-            divider = GradientDrawable().apply { setColor(colorBorder) }
-            dividerHeight = 1
-        }
-        root.addView(listView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(340)).apply {
-            topMargin = dp(8)
-        })
-
-        Stations.AVAILABLE_INITIALS.forEach { initial ->
-            val t = chip(initial.toString(), selected = false) {
-                val idx = Stations.firstIndexOf(initial)
-                if (idx >= 0) listView.setSelection(idx)
-            }
-            tabRow.addView(t, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                marginEnd = dp(6)
+        panel {
+            add(text("조회 간격", 17f, true))
+            ReservationOptions.INTERVALS.chunked(4).forEach { group -> row(this, *group.map { seconds ->
+                button("${seconds}초", seconds == draft.interval) { draft.interval = seconds; renderPage() }
+            }.toTypedArray()) }
+            add(caption("조회가 끝난 뒤 다음 조회까지의 대기시간입니다. 1·3초는 요청 빈도가 높으므로 기본값은 5초입니다."))
+            divider(this)
+            val modes = listOf(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM, AppCompatDelegate.MODE_NIGHT_NO, AppCompatDelegate.MODE_NIGHT_YES)
+            val names = listOf("시스템 설정", "라이트", "다크")
+            add(button("화면 테마 · ${names[modes.indexOf(draft.theme).coerceAtLeast(0)]}") {
+                choose("화면 테마", names, modes.indexOf(draft.theme)) { draft.theme = modes[it]; renderPage() }
             })
+            add(caption("테마는 설정 저장 시 적용됩니다. 작성 중인 입력은 유지됩니다."))
+            add(button("알림 권한 설정") { notificationSettings() })
+            add(button("배터리 최적화 설정") { batterySettings() })
         }
-
-        dialog = AlertDialog.Builder(this).setView(root).create()
-
-        search.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: Editable?) {
-                val query = s?.toString().orEmpty()
-                val filtered = Stations.NAMES.filter { Stations.matches(it, query) }
-                adapter.clear()
-                adapter.addAll(filtered)
-            }
+        content.add(button("설정 저장", true) {
+            val credentials = Triple(draft.type, draft.id.trim(), draft.password)
+            val unchanged = credentials == Triple(prefs.loginType, prefs.loginId, prefs.password)
+            prefs.loginVerified = verifiedCredentials == credentials || (unchanged && prefs.loginVerified)
+            prefs.loginType = credentials.first; prefs.loginId = credentials.second; prefs.password = credentials.third
+            prefs.telegramToken = draft.token.trim(); prefs.telegramChatId = draft.chat.trim(); prefs.pollIntervalSec = draft.interval
+            ThemePrefs.setMode(this, draft.theme)
+            settingsFeedback = if (running) "저장 완료 · 실행 중인 조회에는 적용되지 않으며 다음 시작부터 적용됩니다." else "설정을 저장했습니다."
+            renderPage()
+            AppCompatDelegate.setDefaultNightMode(draft.theme)
+        }.apply { isEnabled = !settingsBusy })
+        content.add(caption(settingsFeedback.ifBlank { if (running) "실행 중 설정 변경은 다음 시작부터 적용됩니다." else "확인 버튼은 계정 정보를 저장하지 않습니다." }))
+    }
+    private fun field(parent: LinearLayout, label: String, value: String, type: Int, update: (String) -> Unit) {
+        parent.add(caption(label))
+        parent.add(EditText(this).apply {
+            contentDescription = label; inputType = type; setSingleLine(); textSize = 16f; minHeight = dp(48)
+            setText(value); addTextChangedListener(watcher(update))
         })
-        listView.setOnItemClickListener { _, _, position, _ ->
-            target.setText(adapter.getItem(position))
-            dialog.dismiss()
-        }
-        dialog.show()
-        dialog.window?.apply {
-            setGravity(Gravity.TOP)
-            setBackgroundDrawable(GradientDrawable().apply { setColor(colorBg) })
+    }
+    private fun testLogin(draft: SettingsDraft) {
+        val credentials = Triple(draft.type, draft.id.trim(), draft.password)
+        if (credentials.second.isBlank() || credentials.third.isBlank()) { loginFeedback = "아이디와 비밀번호를 입력하세요."; renderPage(); return }
+        settingsBusy = true; loginFeedback = "로그인 확인 중…"; renderPage()
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) { KorailApi().login(credentials.first, credentials.second, credentials.third) }
+                verifiedCredentials = credentials
+                loginFeedback = "로그인 확인 성공 · 저장을 눌러 적용하세요."
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { loginFeedback = "로그인 실패: ${e.message}" }
+            finally { settingsBusy = false; if (currentPage == "settings") renderPage() }
         }
     }
-
-    /** KORAIL-style "가는날 선택": a calendar plus hour-band chips (0~23시) merged into one confirm step. */
-    private fun showDateAndStartTimePicker() {
-        val pad = dp(16)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(colorBg)
-            setPadding(pad, pad, pad, pad)
-        }
-        root.addView(dialogTitle("가는날 선택"))
-
-        val cal = Calendar.getInstance()
-        if (selectedDate.length == 8) {
-            runCatching {
-                cal.set(
-                    selectedDate.substring(0, 4).toInt(),
-                    selectedDate.substring(4, 6).toInt() - 1,
-                    selectedDate.substring(6, 8).toInt()
-                )
-            }
-        }
-        var pickedDate = selectedDate.ifBlank {
-            "%04d%02d%02d".format(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
-        }
-
-        val calendarCard = FrameLayout(this).apply {
-            // Was hardcoded white — but the theme also makes CalendarView's day-number text
-            // white in dark mode, so white-on-white made the whole calendar invisible.
-            // colorCard/colorBorder track the same light/dark mode as the text does.
-            background = roundedDrawable(colorCard, colorBorder, 10)
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-        }
-        val calendarView = CalendarView(this).apply { date = cal.timeInMillis }
-        calendarCard.addView(calendarView)
-        root.addView(calendarCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(8)
-        })
-
-        val hourLabel = TextView(this).apply {
-            text = "시간대 선택"
-            setTextColor(colorTextPrimary)
-            textSize = 15f
-        }
-        root.addView(hourLabel, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(16)
-        })
-
-        val currentStart = binding.editStartTime.text.toString().trim()
-        var pickedHour = currentStart.take(2).toIntOrNull() ?: 0
-        var pickedMinute = currentStart.drop(2).take(2).toIntOrNull() ?: 0
-
-        val hourLabelRow = TextView(this).apply {
-            text = "시"
-            setTextColor(colorTextSecondary)
-            textSize = 13f
-        }
-        root.addView(hourLabelRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(8)
-        })
-
-        val hourScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val hourRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        hourScroll.addView(hourRow)
-        root.addView(hourScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(4)
-        })
-
-        val minuteLabelRow = TextView(this).apply {
-            text = "분"
-            setTextColor(colorTextSecondary)
-            textSize = 13f
-        }
-        root.addView(minuteLabelRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(10)
-        })
-
-        val minuteScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val minuteRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        minuteScroll.addView(minuteRow)
-        root.addView(minuteScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(4)
-        })
-
-        val summary = TextView(this).apply {
-            setTextColor(colorTextSecondary)
-            textSize = 14f
-        }
-        root.addView(summary, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(14)
-        })
-
-        fun updateSummary() {
-            val y = pickedDate.substring(0, 4)
-            val m = pickedDate.substring(4, 6).toInt()
-            val d = pickedDate.substring(6, 8).toInt()
-            summary.text = "${y}년 ${m}월 ${d}일 · %02d:%02d 이후".format(pickedHour, pickedMinute)
-        }
-
-        lateinit var refreshHourChips: () -> Unit
-        refreshHourChips = {
-            hourRow.removeAllViews()
-            for (h in 0..23) {
-                val c = chip("${h}시", selected = h == pickedHour) {
-                    pickedHour = h
-                    refreshHourChips()
-                    updateSummary()
-                }
-                hourRow.addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = dp(6)
-                })
-            }
-        }
-        lateinit var refreshMinuteChips: () -> Unit
-        refreshMinuteChips = {
-            minuteRow.removeAllViews()
-            for (min in 0..55 step 5) {
-                val c = chip("%02d분".format(min), selected = min == pickedMinute) {
-                    pickedMinute = min
-                    refreshMinuteChips()
-                    updateSummary()
-                }
-                minuteRow.addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = dp(6)
-                })
-            }
-        }
-        refreshHourChips()
-        refreshMinuteChips()
-        updateSummary()
-
-        calendarView.setOnDateChangeListener { _, year, month, dayOfMonth ->
-            pickedDate = "%04d%02d%02d".format(year, month + 1, dayOfMonth)
-            updateSummary()
-        }
-
-        val confirmBtn = Button(this).apply {
-            text = "선택 완료"
-            setBackgroundColor(colorAccent)
-            setTextColor(Color.WHITE)
-        }
-        root.addView(confirmBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(16)
-        })
-
-        val dialog = AlertDialog.Builder(this).setView(ScrollView(this).apply { addView(root) }).create()
-        confirmBtn.setOnClickListener {
-            val startTime = "%02d%02d00".format(pickedHour, pickedMinute)
-            val pastReason = pastDepartureReason(pickedDate, startTime)
-            if (pastReason != null) {
-                Toast.makeText(this, pastReason, Toast.LENGTH_LONG).show()
-                return@setOnClickListener
-            }
-            selectedDate = pickedDate
-            binding.textSelectedDate.text = "선택된 날짜: $selectedDate"
-            binding.editStartTime.setText("%02d%02d".format(pickedHour, pickedMinute))
-            dialog.dismiss()
-        }
-        dialog.show()
-        dialog.window?.setBackgroundDrawable(GradientDrawable().apply { setColor(colorBg) })
-    }
-
-    /** KORAIL-style hour-band chips for the (optional) end-time filter, with a "선택 안함" clear option. */
-    private fun showEndTimePicker() {
-        val pad = dp(16)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(colorBg)
-            setPadding(pad, pad, pad, pad)
-        }
-        root.addView(dialogTitle("종료시각 선택"))
-
-        val currentEnd = binding.editEndTime.text.toString().trim()
-        val currentHour = currentEnd.take(2).toIntOrNull()
-        var pickedHour = currentHour ?: 0
-        var pickedMinute = currentEnd.drop(2).take(2).toIntOrNull() ?: 0
-
-        root.addView(TextView(this).apply {
-            text = "시"
-            setTextColor(colorTextSecondary)
-            textSize = 13f
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
-
-        val hourScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val hourRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        hourScroll.addView(hourRow)
-        root.addView(hourScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(4)
-        })
-
-        root.addView(TextView(this).apply {
-            text = "분"
-            setTextColor(colorTextSecondary)
-            textSize = 13f
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
-
-        val minuteScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val minuteRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        minuteScroll.addView(minuteRow)
-        root.addView(minuteScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(4)
-        })
-
-        val summary = TextView(this).apply {
-            setTextColor(colorTextSecondary)
-            textSize = 14f
-        }
-        root.addView(summary, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(12)
-        })
-        fun updateSummary() { summary.text = "%02d:%02d 까지".format(pickedHour, pickedMinute) }
-
-        lateinit var refreshHourChips: () -> Unit
-        refreshHourChips = {
-            hourRow.removeAllViews()
-            for (h in 0..23) {
-                val c = chip("${h}시", selected = h == pickedHour) {
-                    pickedHour = h
-                    refreshHourChips()
-                    updateSummary()
-                }
-                hourRow.addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = dp(6)
-                })
-            }
-        }
-        lateinit var refreshMinuteChips: () -> Unit
-        refreshMinuteChips = {
-            minuteRow.removeAllViews()
-            for (min in 0..55 step 5) {
-                val c = chip("%02d분".format(min), selected = min == pickedMinute) {
-                    pickedMinute = min
-                    refreshMinuteChips()
-                    updateSummary()
-                }
-                minuteRow.addView(c, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = dp(6)
-                })
-            }
-        }
-        refreshHourChips()
-        refreshMinuteChips()
-        updateSummary()
-
-        lateinit var dialog: AlertDialog
-
-        val confirmChip = chip("이 시각으로 설정", selected = false) {
-            binding.editEndTime.setText("%02d%02d".format(pickedHour, pickedMinute))
-            dialog.dismiss()
-        }
-        root.addView(confirmChip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(16)
-        })
-
-        val clearChip = chip("선택 안함", selected = currentHour == null) {
-            binding.editEndTime.setText("")
-            dialog.dismiss()
-        }
-        root.addView(clearChip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(8)
-        })
-
-        dialog = AlertDialog.Builder(this).setView(ScrollView(this).apply { addView(root) }).create()
-        dialog.show()
-        dialog.window?.setBackgroundDrawable(GradientDrawable().apply { setColor(colorBg) })
-    }
-
-    private fun onStartClicked() {
-        val dep = binding.editDepStation.text.toString().trim()
-        val arr = binding.editArrStation.text.toString().trim()
-        val startTime = binding.editStartTime.text.toString().trim().ifBlank { "000000" }.padEnd(6, '0')
-        val endTimeRaw = binding.editEndTime.text.toString().trim()
-        val endTime = if (endTimeRaw.isBlank()) "" else endTimeRaw.padEnd(6, '0')
-        val adultCount = binding.editAdultCount.text.toString().trim().toIntOrNull() ?: 1
-
-        if (prefs.loginId.isBlank() || prefs.password.isBlank()) {
-            Toast.makeText(this, "환경설정(⚙)에서 코레일 로그인 정보를 입력하세요", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (dep.isBlank() || arr.isBlank()) {
-            Toast.makeText(this, "출발역/도착역을 입력하세요", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (selectedDate.isBlank()) {
-            Toast.makeText(this, "날짜를 선택하세요", Toast.LENGTH_SHORT).show()
-            return
-        }
-        pastDepartureReason(selectedDate, startTime)?.let { reason ->
-            Toast.makeText(this, reason, Toast.LENGTH_LONG).show()
-            ServiceBus.append("시작 취소 — $reason")
-            return
-        }
-        val selectedTypes = buildSet {
-            if (binding.cbKtx.isChecked) add(TrainType.KTX)
-            if (binding.cbItxSaemaeul.isChecked) add(TrainType.ITX_SAEMAEUL)
-            if (binding.cbMugunghwa.isChecked) add(TrainType.MUGUNGHWA)
-            if (binding.cbItxCheongchun.isChecked) add(TrainType.ITX_CHEONGCHUN)
-        }
-        if (selectedTypes.isEmpty()) {
-            Toast.makeText(this, "열차 종류를 하나 이상 선택하세요", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        prefs.depStation = dep
-        prefs.arrStation = arr
-        prefs.travelDate = selectedDate
-        prefs.startTime = startTime
-        prefs.endTime = endTime
-        prefs.adultCount = adultCount
-        prefs.seatType = when (binding.radioGroupSeatType.checkedRadioButtonId) {
-            binding.rbSpecialSeat.id -> KorailApi.SEAT_SPECIAL
-            binding.rbAnySeat.id -> KorailApi.SEAT_ANY
-            else -> KorailApi.SEAT_GENERAL
-        }
-        prefs.trainTypes = selectedTypes
-        prefs.pushRecentRoute(dep, arr)
-
-        ServiceBus.clear()
-        ContextCompat.startForegroundService(this, Intent(this, ReservationService::class.java))
-    }
-
-    private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
-            }
+    private fun testTelegram(draft: SettingsDraft) {
+        val token = draft.token.trim(); val chat = draft.chat.trim()
+        if (token.isBlank() || chat.isBlank()) { telegramFeedback = "토큰과 Chat ID를 입력하세요."; renderPage(); return }
+        settingsBusy = true; telegramFeedback = "테스트 알림 전송 중…"; renderPage()
+        lifecycleScope.launch {
+            try {
+                val success = withContext(Dispatchers.IO) { TelegramNotifier(token, chat).send("코레일 매크로 테스트 알림입니다. 알림 연결을 확인했습니다.") }
+                telegramFeedback = if (success) "테스트 알림 전송 완료" else "전송 실패 · 토큰, Chat ID, 봇 대화 시작 여부를 확인하세요."
+            } finally { settingsBusy = false; if (currentPage == "settings") renderPage() }
         }
     }
-
-    private fun requestIgnoreBatteryOptimizations() {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
-        } else {
-            Toast.makeText(this, "이미 배터리 최적화에서 제외되어 있습니다", Toast.LENGTH_SHORT).show()
-        }
+    private fun showFullLog() {
+        val log = text(ServiceBus.log.value, 13f).apply { typeface = Typeface.MONOSPACE; setTextIsSelectable(true); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val logScroll = ScrollView(this).apply { addView(log) }
+        val dialog = AlertDialog.Builder(this).setTitle("실행 로그").setView(logScroll).setPositiveButton("닫기", null).create()
+        val job = lifecycleScope.launch { ServiceBus.log.collect { log.text = it } }
+        dialog.setOnDismissListener { job.cancel() }; dialog.show()
     }
+    private fun batterySettings() {
+        if (getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) { toast("이미 배터리 최적화에서 제외되어 있습니다."); return }
+        runCatching { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))) }.onFailure { toast("기기 설정에서 배터리 제한을 해제하세요.") }
+    }
+    private fun notificationSettings() { startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)) }
+    private fun toast(message: String) { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
 }

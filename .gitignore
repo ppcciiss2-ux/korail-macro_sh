@@ -13,3 +13,4 @@ build/
 
 # machine-specific
 local.properties
+.build-tmp/
