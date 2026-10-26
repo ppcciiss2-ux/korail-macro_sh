@@ -6,6 +6,14 @@ v1.1부터는 고정 서명 키를 쓰므로 앱 삭제 없이 덮어쓰기 업�
 
 ---
 
+## v2.0.0 (versionCode 20000)
+
+- [설정] → [업데이트] 화면 추가. 누를 때만 새 버전을 확인하고(앱 실행·백그라운드 확인 없음),
+  "앱(2.0.0) / 앱이 최신입니다"처럼 한 줄로 상태를 보인다.
+- 새 버전은 업데이트 전용 공개 저장소 `korail-macro-updates`에서 https로 받아 SHA-256·패키지·버전을
+  확인한 뒤 Android 설치 화면을 연다. 게시는 `scripts/publish-android-update.ps1` (docs/RELEASE.md).
+- versionCode 규칙 변경: `major*10000 + minor*100 + patch`.
+
 ## v1.5-test1 (versionCode 6) — UI 테스트 브랜치
 
 - 4개 화면 탭, 고정 실행 버튼, 상태 요약, 접이식 로그와 시스템 테마 지원.

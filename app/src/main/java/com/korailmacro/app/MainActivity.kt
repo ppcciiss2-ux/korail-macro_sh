@@ -36,6 +36,7 @@ import com.korailmacro.app.korail.Stations
 import com.korailmacro.app.korail.Train
 import com.korailmacro.app.korail.TrainType
 import com.korailmacro.app.notify.TelegramNotifier
+import com.korailmacro.app.update.UpdateActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -489,6 +490,11 @@ class MainActivity : AppCompatActivity() {
             AppCompatDelegate.setDefaultNightMode(draft.theme)
         }.apply { isEnabled = !settingsBusy })
         content.add(caption(settingsFeedback.ifBlank { if (running) "실행 중 설정 변경은 다음 시작부터 적용됩니다." else "확인 버튼은 계정 정보를 저장하지 않습니다." }))
+        panel {
+            add(text("앱", 17f, true))
+            add(button("업데이트") { startActivity(Intent(this@MainActivity, UpdateActivity::class.java)) })
+            add(caption("현재 버전 ${BuildConfig.VERSION_NAME} · 누를 때만 새 버전을 확인합니다."))
+        }.apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(12) }
     }
     private fun field(parent: LinearLayout, label: String, value: String, type: Int, update: (String) -> Unit) {
         parent.add(caption(label))

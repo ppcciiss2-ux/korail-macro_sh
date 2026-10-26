@@ -1,5 +1,13 @@
 # 코레일 예매 매크로 (개인용 Android 앱)
 
+## 업데이트 (2.0.0부터)
+
+[설정] → [업데이트]를 누르면 새 버전을 확인합니다. 앱을 켤 때나 백그라운드에서는 확인하지 않습니다.
+새 버전이 있으면 [업데이트]로 받아 SHA-256을 확인한 뒤 Android 설치 화면을 엽니다.
+APK와 버전 정보는 공개 저장소 [korail-macro-updates](https://github.com/ppcciiss2-ux/korail-macro-updates)에 있고,
+1.4 이하에서는 2.0.0을 한 번 [Releases](https://github.com/ppcciiss2-ux/korail-macro-updates/releases)에서 받아 설치합니다.
+게시 방법은 [docs/RELEASE.md](docs/RELEASE.md)를 참고하세요.
+
 ## UI 테스트 버전 (1.5-test1, 정식 릴리스 아님)
 
 `codex/ui-improvements` 브랜치의 `releases/korailmacro-preview.apk`는 **코레일 매크로 테스트**라는
