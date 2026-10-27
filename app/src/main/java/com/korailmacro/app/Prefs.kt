@@ -7,6 +7,47 @@ import androidx.security.crypto.MasterKey
 import com.korailmacro.app.korail.TrainType
 
 class Prefs(context: Context) {
+    var draft: ReservationOptions
+        get() = ReservationOptions.fromJson(sp.getString("draft", "").orEmpty()) ?: ReservationOptions(
+            departure = depStation, arrival = arrStation,
+            date = travelDate.ifBlank { java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE) },
+            start = startTime, end = endTime, adults = adultCount, seat = seatType, types = trainTypes)
+        set(value) { sp.edit().putString("draft", value.json()).apply() }
+
+    var lastResult: String
+        get() = sp.getString("lastResult", "").orEmpty()
+        // Persist the booking before attempting any notification or suspending the coroutine.
+        set(value) { check(sp.edit().putString("lastResult", value).commit()) { "예약 결과 저장 실패" } }
+
+    var lastRunStatus: String
+        get() = sp.getString("lastRunStatus", "시작 대기").orEmpty()
+        set(value) { sp.edit().putString("lastRunStatus", value).apply() }
+
+    var loginVerified: Boolean
+        get() = sp.getBoolean("loginVerified", false)
+        set(value) { sp.edit().putBoolean("loginVerified", value).apply() }
+
+    fun favorites(): List<Pair<String, ReservationOptions>> = runCatching {
+        val array = org.json.JSONArray(sp.getString("favorites", "[]"))
+        (0 until array.length()).mapNotNull { index ->
+            val entry = array.getJSONObject(index)
+            ReservationOptions.fromJson(entry.getString("options"))?.let { entry.getString("name") to it }
+        }
+    }.getOrDefault(emptyList())
+
+    fun saveFavorite(name: String, options: ReservationOptions) {
+        val values = favorites().filterNot { it.first == name }.toMutableList()
+        values.add(0, name to options.copy(onlySelected = false, trainKeys = emptySet()))
+        sp.edit().putString("favorites", org.json.JSONArray(values.take(10).map {
+            org.json.JSONObject().put("name", it.first).put("options", it.second.json())
+        }).toString()).apply()
+    }
+
+    fun removeFavorite(name: String) {
+        sp.edit().putString("favorites", org.json.JSONArray(favorites().filterNot { it.first == name }.map {
+            org.json.JSONObject().put("name", it.first).put("options", it.second.json())
+        }).toString()).apply()
+    }
 
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)

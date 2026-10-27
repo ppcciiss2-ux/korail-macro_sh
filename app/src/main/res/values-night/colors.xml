@@ -9,4 +9,5 @@
     <color name="textPrimary">#FFFFFF</color>
     <color name="textSecondary">#9AA0AC</color>
     <color name="colorSuccess">#4CD964</color>
+    <color name="colorError">#FFB4AB</color>
 </resources>
