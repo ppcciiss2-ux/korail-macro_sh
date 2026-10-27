@@ -1,7 +1,6 @@
 package com.korailmacro.app.korail
 
-import android.util.Base64
-import android.util.Log
+import java.util.Base64
 import okhttp3.CertificatePinner
 import okhttp3.Cookie
 import okhttp3.CookieJar
@@ -18,14 +17,14 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Unofficial client for the KORAIL (letskorail) mobile app API, ported from the
- * behavior of the actively-maintained yakisoba0728/korail-mobile-api Python
- * project (itself decompiled from KORAIL app v6.5.0). This is a reverse-engineered,
+ * behavior of yakisoba0728/korail-mobile-api through v3.0.0 (v4 removed booking).
+ * This is a reverse-engineered,
  * undocumented API — endpoints, field names, the login crypto scheme, or the
  * DynaPath anti-automation token algorithm may change without notice on Korail's
  * side. Authentication is cookie-based (JSESSIONID), so one instance of this class
  * must be reused for the whole session.
  */
-class KorailException(message: String, val rawResponse: String? = null) : Exception(message)
+class KorailException(message: String, val rawResponse: String? = null, val stopPolling: Boolean = false) : Exception(message)
 
 data class Train(
     val trainTypeCode: String,      // h_trn_clsf_cd
@@ -98,26 +97,24 @@ private class MemoryCookieJar : CookieJar {
     }
 }
 
-class KorailApi {
+class KorailApi internal constructor(private val transport: okhttp3.Call.Factory? = null) {
+
+    constructor() : this(null)
 
     companion object {
-        private const val TAG = "KorailApi"
         private const val SCHEME_HOST = "https://smart.letskorail.com:443/classes/com.korail.mobile"
         private const val URL_CODE = "$SCHEME_HOST.common.code.do"
         private const val URL_LOGIN = "$SCHEME_HOST.login.Login"
         private const val URL_SEARCH = "$SCHEME_HOST.seatMovie.ScheduleView"
         private const val URL_RESERVE = "$SCHEME_HOST.certification.TicketReservation"
-        private const val LOGIN_PATH = "/classes/com.korail.mobile.login.Login"
-        private const val RESERVE_PATH = "/classes/com.korail.mobile.certification.TicketReservation"
 
         private const val DEVICE = "AD"
-        private const val VERSION = "250601003"
+        private const val VERSION = "250722001"
+        private const val APP_VERSION = "7.0.10"
         // Static app key expected on Login/TicketReservation; the server tracks the
         // actual session via the login cookie, not this value.
         private const val APP_KEY = "korail1234567890"
-        private const val OS_RELEASE = "15"
-        private const val DEVICE_MODEL = "Android"
-        private const val USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android $OS_RELEASE; $DEVICE_MODEL)"
+        private const val USER_AGENT = "korailtalk"
 
         // txtInputFlg values expected by the server
         const val LOGIN_TYPE_MEMBERSHIP = "2"
@@ -181,11 +178,27 @@ class KorailApi {
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
         .certificatePinner(KORAIL_CERT_PINNER)
+        .retryOnConnectionFailure(false)
+        .followRedirects(false)
+        .followSslRedirects(false)
         .build()
 
-    // One synthetic device identity + app-start timestamp per login session, matching
-    // how the real app keeps a stable DynaPath device id for the process lifetime.
-    private val dynaPathSettings = DynaPath.buildDefaultTokenSettings(OS_RELEASE, DEVICE_MODEL)
+    // Shared fields match the last published reservation-capable client.
+    private fun commonForm() = FormBody.Builder()
+        .add("Device", DEVICE).add("Version", VERSION)
+        .add("AppVersion", APP_VERSION).add("Key", APP_KEY)
+
+    private fun executeJson(request: Request, reservation: Boolean = false): JSONObject {
+        try {
+            return (transport ?: client).newCall(request).execute().use { response ->
+                KorailResponse.decode(response.code, response.body?.string().orEmpty())
+            }
+        } catch (e: Exception) {
+            if (!reservation || (e is KorailException && e.stopPolling)) throw e
+            // Never repeat a booking whose response was lost or malformed.
+            throw KorailException("예약 결과를 확인할 수 없습니다. 코레일 앱의 예약 내역을 확인한 후 다시 시작하세요.", stopPolling = true)
+        }
+    }
 
     private fun baseRequest(url: String) = Request.Builder()
         .url(url)
@@ -195,10 +208,7 @@ class KorailApi {
     private data class LoginCryptoInfo(val idx: String, val key: String, val pwdAesCphd: String)
 
     private fun getLoginCryptoInfo(): LoginCryptoInfo {
-        val formBuilder = FormBody.Builder()
-            .add("Device", DEVICE)
-            .add("Version", VERSION)
-            .add("Key", APP_KEY)
+        val formBuilder = commonForm()
         for (code in COMMON_CODE_BOOTSTRAP_CODES) formBuilder.add("code", code)
         formBuilder.add("deviceWidth", "1080")
         formBuilder.add("deviceHeight", "2400")
@@ -208,10 +218,7 @@ class KorailApi {
             .post(formBuilder.build())
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             .build()
-        val text = client.newCall(req).execute().use { resp ->
-            resp.body?.string() ?: throw KorailException("암호화 키 응답이 비어 있습니다")
-        }
-        val root = JSONObject(text)
+        val root = executeJson(req)
         val payload = root.optJSONObject("app.login.cphd")
             ?: root.optJSONObject("login")
             ?: root.optJSONObject("data")?.optJSONObject("app.login.cphd")
@@ -221,10 +228,10 @@ class KorailApi {
         val key = payload.optString("key", "")
         val pwdAesCphd = (payload.optString("pwdAESCphd", payload.optString("loginFlg", ""))).uppercase()
         if (pwdAesCphd != "Y" && pwdAesCphd != "N") {
-            throw KorailException("암호화 파라미터(pwdAESCphd)를 확인할 수 없습니다", text)
+            throw KorailException("암호화 파라미터(pwdAESCphd)를 확인할 수 없습니다", stopPolling = true)
         }
         if (pwdAesCphd == "Y" && (idx.isBlank() || key.isBlank())) {
-            throw KorailException("암호화 키/idx가 비어 있습니다", text)
+            throw KorailException("암호화 키/idx가 비어 있습니다", stopPolling = true)
         }
         return LoginCryptoInfo(idx, key, pwdAesCphd)
     }
@@ -240,10 +247,10 @@ class KorailApi {
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(iv))
             val encrypted = cipher.doFinal(password.toByteArray(Charsets.UTF_8))
-            val step1 = Base64.encodeToString(encrypted, Base64.DEFAULT)
-            return Base64.encodeToString(step1.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            val step1 = wrappedBase64(encrypted)
+            return Base64.getEncoder().encodeToString(step1.toByteArray(Charsets.UTF_8))
         }
-        return Base64.encodeToString(password.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        return Base64.getEncoder().encodeToString(password.toByteArray(Charsets.UTF_8))
     }
 
     /** Mirrors S4/C0812l.getSid: AES-CBC("AD"+epochMillis, fixed key==iv) -> Base64 DEFAULT. */
@@ -253,39 +260,37 @@ class KorailApi {
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(sidKey, "AES"), IvParameterSpec(sidKey))
         val encrypted = cipher.doFinal(plaintext)
-        return Base64.encodeToString(encrypted, Base64.DEFAULT)
+        return wrappedBase64(encrypted)
     }
+
+    // Android Base64.DEFAULT uses LF every 76 characters, including a final LF.
+    private fun wrappedBase64(bytes: ByteArray): String =
+        Base64.getEncoder().encodeToString(bytes).chunked(76).joinToString("\n", postfix = "\n")
 
     /** Logs in. Throws [KorailException] on failure. Session is tracked via cookies afterwards. */
     fun login(loginType: String, loginId: String, password: String) {
         val cryptoInfo = getLoginCryptoInfo()
         val transformedPwd = transformLoginPassword(password, cryptoInfo)
 
-        val formBuilder = FormBody.Builder()
-            .add("Device", DEVICE)
-            .add("Version", VERSION)
-            .add("Key", APP_KEY)
+        val formBuilder = commonForm()
             .add("txtMemberNo", loginId)
             .add("txtPwd", transformedPwd)
             .add("txtInputFlg", loginType)
             .add("checkValidPw", "Y")
         if (cryptoInfo.idx.isNotBlank()) formBuilder.add("idx", cryptoInfo.idx)
 
-        val dynapathToken = DynaPath.generateToken(dynaPathSettings)
+        val dynapathToken = MobileCompatibility.diagnosticToken
         val req = baseRequest(URL_LOGIN)
             .post(formBuilder.build())
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             .header(DynaPath.HEADER_NAME, dynapathToken)
             .build()
 
-        val text = client.newCall(req).execute().use { resp ->
-            resp.body?.string() ?: throw KorailException("로그인 응답이 비어 있습니다")
-        }
-        val json = JSONObject(text)
+        val json = executeJson(req)
         val msgCd = json.optString("h_msg_cd", "")
         if (msgCd !in LOGIN_SUCCESS_CODES) {
             val msg = json.optString("h_msg_txt", "로그인 실패")
-            throw KorailException("$msgCd: $msg", text)
+            throw KorailException("$msgCd: $msg")
         }
     }
 
@@ -343,9 +348,7 @@ class KorailApi {
         time: String,
         adultCount: Int
     ): List<Train> {
-        val formBuilder = FormBody.Builder()
-            .add("Device", DEVICE)
-            .add("Version", VERSION)
+        val formBuilder = commonForm()
             .add("Sid", generateSid())
             .add("txtMenuId", "11")
             .add("radJobId", "1")
@@ -373,19 +376,18 @@ class KorailApi {
             .add("qryStTrnNo2", "")
             .add("pgPrCnt", "10")
 
-        val dynapathToken = DynaPath.generateToken(dynaPathSettings)
+        val dynapathToken = MobileCompatibility.diagnosticToken
         val req = baseRequest(URL_SEARCH)
             .post(formBuilder.build())
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             .header(DynaPath.HEADER_NAME, dynapathToken)
             .build()
-        val text = client.newCall(req).execute().use { resp ->
-            resp.body?.string() ?: throw KorailException("검색 응답이 비어 있습니다")
-        }
-        val json = JSONObject(text)
+        val json = executeJson(req)
         if (json.optString("strResult") == "FAIL") {
-            Log.w(TAG, "search fail raw=$text")
-            throw KorailException(json.optString("h_msg_txt", "조회 실패"), text)
+            throw KorailException(json.optString("h_msg_txt", "조회 실패"))
+        }
+        if (json.optString("strResult") != "SUCC") {
+            throw KorailException("조회 응답을 확인할 수 없습니다.", stopPolling = true)
         }
         val trnInfos = json.opt("trn_infos")
         val list = when (trnInfos) {
@@ -426,10 +428,7 @@ class KorailApi {
 
     /** Reserves [train] for [adultCount] adults. Returns the PNR (reservation) number on success. */
     fun reserve(train: Train, adultCount: Int, seatType: String): String {
-        val formBuilder = FormBody.Builder()
-            .add("Device", DEVICE)
-            .add("Version", VERSION)
-            .add("Key", APP_KEY)
+        val formBuilder = commonForm()
             .add("txtMenuId", "11")
             .add("txtJobId", "1101")
             .add("txtGdNo", "")
@@ -469,21 +468,19 @@ class KorailApi {
             .add("txtArvStnRunOrdr1", train.arrRunOrder)
             .add("txtChgFlg1", "N")
 
-        val dynapathToken = DynaPath.generateToken(dynaPathSettings)
+        val dynapathToken = MobileCompatibility.diagnosticToken
         val req = baseRequest(URL_RESERVE)
             .post(formBuilder.build())
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             .header(DynaPath.HEADER_NAME, dynapathToken)
             .build()
-        val text = client.newCall(req).execute().use { resp ->
-            resp.body?.string() ?: throw KorailException("예약 응답이 비어 있습니다")
-        }
-        val json = JSONObject(text)
+        val json = executeJson(req, reservation = true)
         val pnr = json.optString("h_pnr_no", "")
-        if (json.optString("strResult") == "FAIL" || pnr.isBlank()) {
+        if (json.optString("strResult") == "FAIL") {
             val msg = json.optString("h_msg_txt", "예약 실패")
-            throw KorailException(msg, text)
+            throw KorailException(msg)
         }
+        if (pnr.isBlank()) throw KorailException("예약번호를 확인할 수 없습니다. 코레일 앱의 예약 내역을 확인하세요.", stopPolling = true)
         return pnr
     }
 
