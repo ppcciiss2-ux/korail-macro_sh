@@ -26,6 +26,19 @@ data class ReservationOptions(
     val onlySelected: Boolean = false,
     val trainKeys: Set<String> = emptySet()
 ) {
+    /** Clamp expired draft fields to the device's current minute, never an active run. */
+    fun refreshed(now: LocalDateTime, running: Boolean = false): ReservationOptions {
+        if (running) return this
+        val day = runCatching { LocalDate.parse(date, DateTimeFormatter.BASIC_ISO_DATE) }.getOrNull() ?: return this
+        if (day.isAfter(now.toLocalDate())) return this
+        val current = now.toLocalTime().withSecond(0).withNano(0)
+        val clock = current.format(DateTimeFormatter.ofPattern("HHmmss"))
+        fun clamp(value: String) = if (parseTime(value)?.isBefore(current) == true) clock else value
+        val updated = copy(date = now.toLocalDate().format(DateTimeFormatter.BASIC_ISO_DATE),
+            start = clamp(start), end = clamp(end))
+        return if (updated == this) this else updated.copy(onlySelected = false, trainKeys = emptySet())
+    }
+
     fun error(now: LocalDateTime = LocalDateTime.now(), checkSelection: Boolean = true, checkPast: Boolean = true): String? {
         if (departure.isBlank() || arrival.isBlank()) return "출발역과 도착역을 선택하세요."
         if (departure == arrival) return "출발역과 도착역을 다르게 선택하세요."

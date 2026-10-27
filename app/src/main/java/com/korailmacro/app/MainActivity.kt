@@ -39,10 +39,12 @@ import com.korailmacro.app.notify.TelegramNotifier
 import com.korailmacro.app.update.UpdateActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
@@ -106,6 +108,15 @@ class MainActivity : AppCompatActivity() {
                 launch { ServiceBus.status.collect { updateStatus() } }
                 launch { ServiceBus.log.collect { logView?.text = it } }
                 launch { ServiceBus.result.collect { if (currentPage == "result") renderPage() } }
+                launch {
+                    var lastDay = LocalDate.now()
+                    while (true) {
+                        delay(60_000L - System.currentTimeMillis() % 60_000L)
+                        val today = LocalDate.now()
+                        if (today != lastDay) refreshExpiredOptions()
+                        lastDay = today
+                    }
+                }
             }
         }
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -113,7 +124,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); if (::prefs.isInitialized) updateReady() }
+    override fun onResume() {
+        super.onResume()
+        if (::prefs.isInitialized) { refreshExpiredOptions(); updateReady() }
+    }
+
+    private fun refreshExpiredOptions() {
+        val updated = options.refreshed(LocalDateTime.now(), running)
+        if (updated == options) return
+        changeOptions(updated)
+        toast("지난 예매 조건을 현재 날짜·시간으로 변경했습니다.")
+    }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); showPage(intent.getStringExtra("page") ?: "home") }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("page", currentPage)

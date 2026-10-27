@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.korailmacro.app.korail.KorailApi
+import com.korailmacro.app.korail.KorailException
 import com.korailmacro.app.notify.TelegramNotifier
 import kotlinx.coroutines.*
 import org.json.JSONObject
@@ -80,6 +81,7 @@ class ReservationService : Service() {
                         ServiceBus.append("재로그인 성공")
                         true
                     } catch (e: Exception) {
+                        if (e is KorailException && e.stopPolling) throw e
                         ServiceBus.append("재로그인 실패: ${e.message}")
                         false
                     }
@@ -112,6 +114,7 @@ class ReservationService : Service() {
                                     pnr = api.reserve(target, options.adults, seat)
                                     break
                                 } catch (e: Exception) {
+                                    if (e is KorailException && e.stopPolling) throw e
                                     ensureActive()
                                     ServiceBus.append("예약 시도 실패: ${e.message}")
                                     if (isSessionExpired(e.message) && attempt == 1 && !timeExpired()) {
@@ -150,6 +153,7 @@ class ReservationService : Service() {
                         ServiceBus.update("다음 조회 대기", "${seconds}초 후 다시 조회 · 마지막 확인 ${java.time.LocalTime.now().withNano(0)}")
                     } catch (e: CancellationException) { throw e
                     } catch (e: Exception) {
+                        if (e is KorailException && e.stopPolling) throw e
                         // Once booked, no downstream notification/storage error may restart polling.
                         if (completed) { ServiceBus.append("예약 후 처리 오류: ${e.message}"); break }
                         ensureActive()

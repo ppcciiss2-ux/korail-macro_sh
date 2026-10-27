@@ -7,6 +7,39 @@ import org.junit.Test
 import java.time.LocalDateTime
 
 class ReservationOptionsTest {
+    private val reopenTime = LocalDateTime.of(2026, 10, 26, 18, 20, 45)
+
+    @Test fun expiredDateAndBothTimesBecomeCurrentMinute() {
+        val saved = ReservationOptions(date = "20261021", start = "140000", end = "160000", onlySelected = true, trainKeys = setOf("old"))
+        val updated = saved.refreshed(reopenTime)
+        assertEquals("20261026", updated.date)
+        assertEquals("182000", updated.start)
+        assertEquals("182000", updated.end)
+        assertFalse(updated.onlySelected)
+        assertTrue(updated.trainKeys.isEmpty())
+    }
+    @Test fun todayClampsOnlyExpiredTime() {
+        val updated = ReservationOptions(date = "20261026", start = "140000", end = "210000").refreshed(reopenTime)
+        assertEquals("182000", updated.start)
+        assertEquals("210000", updated.end)
+    }
+    @Test fun futureDateAndActiveRunAreUnchanged() {
+        val future = ReservationOptions(date = "20261027", start = "140000", end = "160000")
+        assertEquals(future, future.refreshed(reopenTime))
+        val active = future.copy(date = "20261021")
+        assertEquals(active, active.refreshed(reopenTime, running = true))
+    }
+    @Test fun midnightUpdatesDateAndPreservesFutureClockAndOpenEnd() {
+        val updated = ReservationOptions(date = "20261025", start = "140000", end = "")
+            .refreshed(LocalDateTime.of(2026, 10, 26, 0, 0))
+        assertEquals("20261026", updated.date)
+        assertEquals("140000", updated.start)
+        assertEquals("", updated.end)
+    }
+    @Test fun sameMinuteRefreshDoesNotClearSelection() {
+        val saved = ReservationOptions(date = "20261026", start = "182000", end = "182000", onlySelected = true, trainKeys = setOf("selected"))
+        assertEquals(saved, saved.refreshed(reopenTime))
+    }
     private val now = LocalDateTime.of(2026, 9, 7, 18, 0)
     private val options = ReservationOptions("서울", "부산", "20260908", "180000", "210000", types = setOf(TrainType.KTX))
     private fun train(time: String = "183000", name: String = "KTX", date: String = "20260908", no: String = "153") = Train(
