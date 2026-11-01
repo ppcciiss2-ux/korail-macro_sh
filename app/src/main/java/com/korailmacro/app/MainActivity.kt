@@ -32,6 +32,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.korailmacro.app.korail.KorailApi
+import com.korailmacro.app.korail.ConnectionDiagnostics
 import com.korailmacro.app.korail.Stations
 import com.korailmacro.app.korail.Train
 import com.korailmacro.app.korail.TrainType
@@ -40,6 +41,7 @@ import com.korailmacro.app.update.UpdateActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -74,6 +76,8 @@ class MainActivity : AppCompatActivity() {
     private var settingsBusy = false
     private var settingsFeedback = ""
     private var loginFeedback = ""
+    private var diagnosticFeedback = ""
+    private var diagnosticBusy = false
     private var telegramFeedback = ""
     private var verifiedCredentials: Triple<String, String, String>? = null
     private val bg get() = color(R.color.bgColor)
@@ -317,6 +321,7 @@ class MainActivity : AppCompatActivity() {
     }
     private fun toggleRun() {
         if (running) { startService(Intent(this, ReservationService::class.java).setAction(ReservationService.ACTION_STOP)); return }
+        if (diagnosticBusy) { toast("연결 진단이 끝난 후 시작하세요."); return }
         val error = options.error() ?: if (prefs.loginId.isBlank() || prefs.password.isBlank()) "설정에서 로그인 정보를 입력하세요." else null
         if (error != null) { errorView?.apply { text = error; visibility = View.VISIBLE; requestRectangleOnScreen(android.graphics.Rect(0, 0, width, height)) }; return }
         prefs.draft = options; prefs.pushRecentRoute(options.departure, options.arrival)
@@ -394,6 +399,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runQuery() {
+        if (diagnosticBusy) { toast("연결 진단이 끝난 후 조회하세요."); return }
         if (queryBusy) return
         val config = activeOptions()
         val error = config.error(checkSelection = false, checkPast = !running) ?: if (prefs.loginId.isBlank() || prefs.password.isBlank()) "설정에서 로그인 정보를 입력하세요." else null
@@ -404,7 +410,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
-                    val api = KorailApi(); api.login(loginType, id, password)
+                    val api = KorailApi.forDevice(this@MainActivity); api.login(loginType, id, password)
                     api.searchTrain(config.departure, config.arrival, config.date, config.start, config.adults, config.end).filter(config::includes)
                 }
                 // Ignore a response if the user edited the form while this independent request was running.
@@ -477,6 +483,17 @@ class MainActivity : AppCompatActivity() {
             add(caption(loginFeedback.ifBlank { "입력한 계정으로 확인한 후 저장하세요." }))
         }
         panel {
+            add(text("연결 진단", 17f, true))
+            add(caption("입력한 계정과 예매 조건으로 초기 통신 → 로그인 → 열차 조회 1회를 검사합니다."))
+            add(button(if (settingsBusy) "처리 중…" else "연결 진단 실행") { runConnectionDiagnostics(draft) }
+                .apply { isEnabled = !settingsBusy && !running && !queryBusy })
+            add(caption(diagnosticFeedback.ifBlank { "버튼을 누를 때만 검사합니다. 예약은 실행하지 않습니다." }))
+            add(button("진단 결과 복사") {
+                getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("연결 진단", diagnosticFeedback))
+                toast("진단 결과를 복사했습니다.")
+            }.apply { isEnabled = diagnosticFeedback.isNotBlank() && !settingsBusy })
+        }
+        panel {
             add(text("알림 연결", 17f, true))
             field(this, "텔레그램 봇 토큰", draft.token, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD) { draft.token = it }
             field(this, "Chat ID", draft.chat, InputType.TYPE_CLASS_TEXT) { draft.chat = it }
@@ -530,12 +547,35 @@ class MainActivity : AppCompatActivity() {
         settingsBusy = true; loginFeedback = "로그인 확인 중…"; renderPage()
         lifecycleScope.launch {
             try {
-                withContext(Dispatchers.IO) { KorailApi().login(credentials.first, credentials.second, credentials.third) }
+                withContext(Dispatchers.IO) { KorailApi.forDevice(this@MainActivity).login(credentials.first, credentials.second, credentials.third) }
                 verifiedCredentials = credentials
                 loginFeedback = "로그인 확인 성공 · 저장을 눌러 적용하세요."
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { loginFeedback = "로그인 실패: ${e.message}" }
             finally { settingsBusy = false; if (currentPage == "settings") renderPage() }
+        }
+    }
+    private fun runConnectionDiagnostics(draft: SettingsDraft) {
+        if (running || settingsBusy || queryBusy) return
+        val config = options
+        val error = config.error(checkSelection = false) ?: if (draft.id.isBlank() || draft.password.isBlank()) "아이디와 비밀번호를 입력하세요." else null
+        if (error != null) { diagnosticFeedback = error; renderPage(); return }
+        val credentials = Triple(draft.type, draft.id.trim(), draft.password)
+        val metrics = resources.displayMetrics
+        val environment = "앱 ${BuildConfig.VERSION_NAME}\n실제 Android SDK ${Build.VERSION.SDK_INT} · 화면 ${metrics.widthPixels}×${metrics.heightPixels}px\n" +
+            "전송 Android SDK ${Build.VERSION.SDK_INT} · 화면 크기 전송 생략\n${KorailApi.TRANSPORT_DESCRIPTION}\n기기 정보: 실제 휴대폰 값 사용 (식별자는 결과에 제외)\n"
+        diagnosticBusy = true; settingsBusy = true; diagnosticFeedback = "진단 중…"; renderPage()
+        lifecycleScope.launch {
+            try {
+                val report = withContext(Dispatchers.IO) {
+                    val context = coroutineContext
+                    ConnectionDiagnostics.run(credentials.first, credentials.second, credentials.third,
+                        config.departure, config.arrival, config.date, config.start, config.adults,
+                        checkActive = { context.ensureActive() },
+                        factory = { KorailApi(diagnostic = it, deviceFacts = com.korailmacro.app.korail.KorailDevice.facts(this@MainActivity)) })
+                }
+                diagnosticFeedback = environment + report
+            } finally { diagnosticBusy = false; settingsBusy = false; if (currentPage == "settings") renderPage() }
         }
     }
     private fun testTelegram(draft: SettingsDraft) {

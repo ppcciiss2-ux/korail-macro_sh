@@ -69,7 +69,7 @@ class ReservationService : Service() {
             var endTitle = "중지됨"
             try {
                 ensureActive()
-                val api = KorailApi()
+                val api = KorailApi.forDevice(this@ReservationService)
                 ServiceBus.append("자동 예약 시작: ${options.summary()}")
                 api.login(loginType, loginId, password)
                 ensureActive()

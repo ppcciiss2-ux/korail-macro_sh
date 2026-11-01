@@ -2,15 +2,6 @@ package com.korailmacro.app.korail
 
 import org.json.JSONObject
 
-/**
- * Adapted from korail-mobile-api v3.0.0, _core/dynapath.py.
- * Copyright (c) 2026 yakisoba0728, Apache-2.0. See THIRD_PARTY_NOTICES.md.
- * Reports native SDK unavailability; does not invent a device identity or signing key.
- */
-internal object MobileCompatibility {
-    const val diagnosticToken = "2!v=2&es=165489088780120535&st=Android&sv=2.0.1&ai=korailplus"
-}
-
 internal object KorailResponse {
     private val stopCodes = setOf("-1203", "-1406", "-2000", "-8005", "-8201", "-8202", "-8203", "-8204")
 

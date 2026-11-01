@@ -20,10 +20,10 @@ class KorailCompatibilityTest {
     private fun assertCommon(request: Request, protected: Boolean = true) {
         val form = request.body as FormBody
         val fields = (0 until form.size).associate { form.name(it) to form.value(it) }
-        assertEquals("250722001", fields["Version"])
-        assertEquals("7.0.10", fields["AppVersion"])
+        assertEquals("261028001", fields["Version"])
+        assertEquals("7.1.0", fields["AppVersion"])
         assertEquals("korailtalk", request.header("User-Agent"))
-        if (protected) assertEquals("2!v=2&es=165489088780120535&st=Android&sv=2.0.1&ai=korailplus", request.header("x-dynapath-m-token"))
+        if (protected) assertTrue(request.header("x-dynapath-m-token").orEmpty().matches(Regex("201[A-Za-z0-9]+")))
     }
 
     @Test fun loginBootstrapAndProtectedLoginUseCompatibleFields() {
