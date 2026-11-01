@@ -25,8 +25,8 @@ android {
         // the SAME key and has a HIGHER versionCode than the installed one.
         // From 2.0.0: versionCode = major*10000 + minor*100 + patch (2.0.0 → 20000).
         // scripts/publish-android-update.ps1 refuses to publish if the two disagree.
-        versionCode = 20000
-        versionName = "2.0.0"
+        versionCode = 20001
+        versionName = "2.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -75,6 +75,7 @@ android {
         buildConfig = true
     }
     testBuildType = "preview"
+    sourceSets["main"].assets.srcDir(rootProject.file("licenses"))
 }
 
 dependencies {

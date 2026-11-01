@@ -97,7 +97,9 @@ private class MemoryCookieJar : CookieJar {
     }
 }
 
-class KorailApi internal constructor(private val transport: okhttp3.Call.Factory? = null) {
+class KorailApi internal constructor(private val transport: okhttp3.Call.Factory? = null,
+    private val diagnostic: ((DiagnosticEvent) -> Unit)? = null,
+    private val deviceFacts: DeviceFacts? = null) {
 
     constructor() : this(null)
 
@@ -109,8 +111,11 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
         private const val URL_RESERVE = "$SCHEME_HOST.certification.TicketReservation"
 
         private const val DEVICE = "AD"
-        private const val VERSION = "250722001"
-        private const val APP_VERSION = "7.0.10"
+        private const val VERSION = "261028001"
+        private const val APP_VERSION = "7.1.0"
+        fun forDevice(context: android.content.Context) = KorailApi(deviceFacts = KorailDevice.facts(context))
+
+        internal const val TRANSPORT_DESCRIPTION = "전송 AppVersion $APP_VERSION · API $VERSION · SDK 2.0.1 선언 토큰"
         // Static app key expected on Login/TicketReservation; the server tracks the
         // actual session via the login cookie, not this value.
         private const val APP_KEY = "korail1234567890"
@@ -183,15 +188,24 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
         .followSslRedirects(false)
         .build()
 
+    // JVM smoke tests use a stable, explicitly synthetic profile. Android callers use forDevice().
+    private val facts = deviceFacts ?: DeviceFacts("15", "SM-S911N", "samsung", "kalama", 35, true,
+        java.util.UUID.randomUUID().toString().replace("-", "").take(16))
+    private fun token() = DeclarationToken.generate(facts)
+
     // Shared fields match the last published reservation-capable client.
     private fun commonForm() = FormBody.Builder()
         .add("Device", DEVICE).add("Version", VERSION)
         .add("AppVersion", APP_VERSION).add("Key", APP_KEY)
 
     private fun executeJson(request: Request, reservation: Boolean = false): JSONObject {
+        val stage = DiagnosticStage.fromPath(request.url.encodedPath)
+        diagnostic?.invoke(DiagnosticEvent(stage))
         try {
             return (transport ?: client).newCall(request).execute().use { response ->
-                KorailResponse.decode(response.code, response.body?.string().orEmpty())
+                val body = response.body?.string().orEmpty()
+                diagnostic?.invoke(DiagnosticEvent(stage, response.code, DiagnosticEvent.serverCode(body)))
+                KorailResponse.decode(response.code, body)
             }
         } catch (e: Exception) {
             if (!reservation || (e is KorailException && e.stopPolling)) throw e
@@ -199,6 +213,10 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
             throw KorailException("예약 결과를 확인할 수 없습니다. 코레일 앱의 예약 내역을 확인한 후 다시 시작하세요.", stopPolling = true)
         }
     }
+
+    /** A single page for explicit diagnostics; never a booking or polling loop. */
+    internal fun diagnosticSearch(dep: String, arr: String, date: String, time: String, adults: Int): Int =
+        fetchSearchPage(dep, arr, date, time, adults).size
 
     private fun baseRequest(url: String) = Request.Builder()
         .url(url)
@@ -210,9 +228,8 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
     private fun getLoginCryptoInfo(): LoginCryptoInfo {
         val formBuilder = commonForm()
         for (code in COMMON_CODE_BOOTSTRAP_CODES) formBuilder.add("code", code)
-        formBuilder.add("deviceWidth", "1080")
-        formBuilder.add("deviceHeight", "2400")
-        formBuilder.add("OSVersion", "35")
+        // Actual Android SDK; display dimensions are not needed for the crypto bootstrap.
+        formBuilder.add("OSVersion", facts.sdk.toString())
 
         val req = baseRequest(URL_CODE)
             .post(formBuilder.build())
@@ -279,7 +296,7 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
             .add("checkValidPw", "Y")
         if (cryptoInfo.idx.isNotBlank()) formBuilder.add("idx", cryptoInfo.idx)
 
-        val dynapathToken = MobileCompatibility.diagnosticToken
+        val dynapathToken = token()
         val req = baseRequest(URL_LOGIN)
             .post(formBuilder.build())
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
@@ -376,7 +393,7 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
             .add("qryStTrnNo2", "")
             .add("pgPrCnt", "10")
 
-        val dynapathToken = MobileCompatibility.diagnosticToken
+        val dynapathToken = token()
         val req = baseRequest(URL_SEARCH)
             .post(formBuilder.build())
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
@@ -468,7 +485,7 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
             .add("txtArvStnRunOrdr1", train.arrRunOrder)
             .add("txtChgFlg1", "N")
 
-        val dynapathToken = MobileCompatibility.diagnosticToken
+        val dynapathToken = token()
         val req = baseRequest(URL_RESERVE)
             .post(formBuilder.build())
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
