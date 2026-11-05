@@ -57,7 +57,7 @@ APK와 버전 정보는 공개 저장소 [korail-macro-updates](https://github.c
 토큰/Chat ID, 최근 역·조건)이 그대로 유지됩니다.
 
 - 폰에서 새 APK를 눌러 → "기존 앱을 업데이트하시겠습니까?" → 확인
-- 또는 PC에서: `adb install -r releases/korailmacro-debug.apk`
+- 또는 PC에서: `adb install -r app/build/outputs/apk/debug/app-debug.apk` (`assembleDebug` 빌드 후)
 - 화면 상단 제목 옆의 `v1.1` 표시로 설치된 버전을 확인할 수 있습니다.
 - 릴리즈마다 `app/build.gradle.kts`의 `versionCode`를 +1 하세요 (안 올리면 업데이트 거부됨).
 
@@ -114,5 +114,5 @@ cd KorailMacro
 ```
 
 두 빌드 모두 `signing/korail-macro.jks`(개인용 고정 서명 키, 저장소에 포함)로 서명되므로
-어느 PC에서 빌드해도 기존 설치본 위에 덮어쓰기 업데이트가 됩니다. 배포용으로는
-`releases/korailmacro-debug.apk` / `releases/korailmacro-release.apk` 를 최신으로 갱신해두세요.
+어느 PC에서 빌드해도 기존 설치본 위에 덮어쓰기 업데이트가 됩니다. 배포는 [docs/RELEASE.md](docs/RELEASE.md)의
+게시 절차를 따릅니다. APK는 Git에 넣지 않습니다.

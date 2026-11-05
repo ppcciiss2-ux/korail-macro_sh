@@ -9,7 +9,6 @@ app/build/
 build/
 *.apk
 *.zip
-!releases/*.apk
 
 # machine-specific
 local.properties
