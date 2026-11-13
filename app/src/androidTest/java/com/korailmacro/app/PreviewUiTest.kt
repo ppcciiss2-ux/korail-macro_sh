@@ -2,11 +2,13 @@ package com.korailmacro.app
 
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.Espresso.pressBack
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.action.ViewActions.scrollTo
 import androidx.test.espresso.assertion.ViewAssertions.doesNotExist
 import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
+import androidx.test.espresso.matcher.ViewMatchers.withSubstring
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -109,10 +111,35 @@ class PreviewUiTest {
             assertEquals(true, prefs.draft.onlySelected)
             assertEquals(emptySet<String>(), prefs.draft.trainKeys)
             onView(withText("자동 예약 시작")).perform(click())
-            onView(withText("좌석 현황에서 감시할 열차를 하나 이상 선택하세요.")).check(matches(isDisplayed()))
+            onView(withText("좌석 현황에서 예약할 열차를 하나 이상 선택하세요.")).check(matches(isDisplayed()))
             assertEquals(false, ServiceBus.running.value)
             onView(withText("전체 열차로 변경")).perform(scrollTo(), click())
             assertEquals(false, prefs.draft.onlySelected)
+        }
+    }
+    @Test fun backFromAnotherTabReturnsToConditions() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("예약 결과")).perform(click())
+            pressBack()
+            onView(withText("⇄ 출발·도착 교환")).perform(scrollTo()).check(matches(isDisplayed()))
+        }
+    }
+    @Test fun missingLoginIsAButtonThatOpensSettings() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("코레일 로그인 확인  ›")).perform(scrollTo(), click())
+            onView(withText("코레일 로그인")).check(matches(isDisplayed()))
+        }
+    }
+    @Test fun startButtonShowsWhatWillBeBooked() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withSubstring("서울 → 부산 · ")).check(matches(isDisplayed()))
+            onView(withSubstring("18:00~21:00 · 일반실 1명 · 전체 열차")).check(matches(isDisplayed()))
+        }
+    }
+    @Test fun sameStationsAreFlaggedNextToTheStationsBeforeStarting() {
+        prefs.draft = prefs.draft.copy(arrival = "서울")
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("출발역과 도착역을 다르게 선택하세요.")).perform(scrollTo()).check(matches(isDisplayed()))
         }
     }
     @Test fun passengerEditKeepsSelectedTrains() {
