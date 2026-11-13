@@ -350,6 +350,12 @@ class MainActivity : AppCompatActivity() {
                 add(caption("최근 구간"))
                 add(chips(recent.map { "${it.first} → ${it.second}" }) { changeOptions(options.copy(departure = recent[it].first, arrival = recent[it].second)) })
             }
+            // Saved conditions load with one tap; the 즐겨찾기 button below still lists them for review and deletion.
+            val favorites = prefs.favorites()
+            if (favorites.isNotEmpty()) {
+                add(caption("저장한 조건 바로 불러오기"))
+                add(chips(favorites.map { "★ ${it.first}" }) { applyFavorite(favorites[it].first, favorites[it].second) })
+            }
             row(this, button(labeled("출발역", options.departure.ifBlank { "선택" })) { stationPicker(true) },
                 button(labeled("도착역", options.arrival.ifBlank { "선택" })) { stationPicker(false) })
             add(button("⇄ 출발·도착 교환") { changeOptions(options.copy(departure = options.arrival, arrival = options.departure)) })
@@ -533,7 +539,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("저장") { _, _ ->
                 val title = name.text.toString().trim()
                 val saved = prefs.favorites()
-                fun save() { prefs.saveFavorite(title, options); toast("조건을 저장했습니다.") }
+                fun save() { prefs.saveFavorite(title, options); renderPage(); toast("조건을 저장했습니다.") }
                 // Nothing is replaced or dropped without asking.
                 when {
                     title.isBlank() -> toast("이름을 입력해야 저장됩니다.")
@@ -548,13 +554,16 @@ class MainActivity : AppCompatActivity() {
         if (favorites.isEmpty()) { toast("저장된 조건이 없습니다."); return }
         choose("즐겨찾기", favorites.map { it.first }) { i ->
             val (name, value) = favorites[i]
-            AlertDialog.Builder(this).setTitle(name).setMessage(value.summary()).setPositiveButton("불러오기") { _, _ ->
-                changeOptions(value.copy(date = options.date, onlySelected = false, trainKeys = emptySet()))
-                toast("조건을 불러왔습니다. 가는 날을 확인하세요.")
+            AlertDialog.Builder(this).setTitle(name).setMessage(value.summary()).setPositiveButton("불러오기") { _, _ -> applyFavorite(name, value)
             }.setNeutralButton("삭제") { _, _ ->
-                confirm("‘$name’ 즐겨찾기를 지울까요?", "지우기") { prefs.removeFavorite(name); toast("즐겨찾기를 지웠습니다.") }
+                confirm("‘$name’ 즐겨찾기를 지울까요?", "지우기") { prefs.removeFavorite(name); renderPage(); toast("즐겨찾기를 지웠습니다.") }
             }.setNegativeButton("닫기", null).show()
         }
+    }
+    /** The saved date is usually in the past, so a favorite keeps the date currently on screen. */
+    private fun applyFavorite(name: String, value: ReservationOptions) {
+        changeOptions(value.copy(date = options.date, onlySelected = false, trainKeys = emptySet()))
+        toast("‘$name’ 조건을 불러왔습니다. 가는 날을 확인하세요.")
     }
 
     @Volatile private var queryApi: KorailApi? = null
@@ -596,7 +605,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderSeats() {
         val active = activeOptions()
         content.add(text(if (running) "실행 중인 조건으로 조회" else "현재 조건으로 조회", 17f, true))
-        content.add(caption((queriedOptions ?: active).summary()))
+        (queriedOptions ?: active).let { if (it.departure.isNotBlank() && it.arrival.isNotBlank()) content.add(caption(it.summary())) }
         row(content, button(if (queryBusy) "조회 중…" else "다시 조회") { runQuery() }.apply { isEnabled = !queryBusy },
             CheckBox(this).apply {
                 text = "예약 가능만 보기"; isChecked = onlyAvailable; minHeight = dp(48)

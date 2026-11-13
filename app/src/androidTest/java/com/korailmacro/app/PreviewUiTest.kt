@@ -194,6 +194,14 @@ class PreviewUiTest {
             onView(withText("텔레그램 봇 토큰 보기")).perform(scrollTo()).check(matches(isDisplayed()))
         }
     }
+    @Test fun savedConditionLoadsWithOneTap() {
+        prefs.saveFavorite("퇴근", prefs.draft.copy(departure = "대전", arrival = "동대구"))
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("★ 퇴근")).perform(scrollTo(), click())
+            assertEquals("대전", prefs.draft.departure)
+            assertEquals("동대구", prefs.draft.arrival)
+        }
+    }
     @Test fun passengerEditKeepsSelectedTrains() {
         prefs.draft = prefs.draft.copy(onlySelected = true, trainKeys = setOf("selected"))
         ActivityScenario.launch(MainActivity::class.java).use {
