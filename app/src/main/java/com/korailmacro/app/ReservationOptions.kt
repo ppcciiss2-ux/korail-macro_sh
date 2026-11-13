@@ -39,25 +39,41 @@ data class ReservationOptions(
         return if (updated == this) this else updated.copy(onlySelected = false, trainKeys = emptySet())
     }
 
-    fun error(now: LocalDateTime = LocalDateTime.now(), checkSelection: Boolean = true, checkPast: Boolean = true): String? {
-        if (departure.isBlank() || arrival.isBlank()) return "출발역과 도착역을 선택하세요."
-        if (departure == arrival) return "출발역과 도착역을 다르게 선택하세요."
+    /** Which part of the form a problem belongs to, so the screen can show it right there. */
+    enum class Field { STATIONS, TIME, PASSENGERS, TYPES, SELECTION, STOP }
+    data class Issue(val field: Field, val message: String)
+
+    fun error(now: LocalDateTime = LocalDateTime.now(), checkSelection: Boolean = true, checkPast: Boolean = true): String? =
+        issue(now, checkSelection, checkPast)?.message
+
+    fun issue(now: LocalDateTime = LocalDateTime.now(), checkSelection: Boolean = true, checkPast: Boolean = true): Issue? {
+        if (departure.isBlank() || arrival.isBlank()) return Issue(Field.STATIONS, "출발역과 도착역을 선택하세요.")
+        if (departure == arrival) return Issue(Field.STATIONS, "출발역과 도착역을 다르게 선택하세요.")
         val day = runCatching { LocalDate.parse(date, DateTimeFormatter.BASIC_ISO_DATE) }.getOrNull()
-            ?: return "가는 날을 선택하세요."
-        val from = parseTime(start) ?: return "열차 출발 시작시각을 선택하세요."
-        if (checkPast && day.atTime(from).isBefore(now.withSecond(0).withNano(0))) return "이미 지난 출발시각입니다. 날짜와 시간을 다시 선택하세요."
+            ?: return Issue(Field.TIME, "가는 날을 선택하세요.")
+        val from = parseTime(start) ?: return Issue(Field.TIME, "열차 출발 시작시각을 선택하세요.")
+        if (checkPast && day.atTime(from).isBefore(now.withSecond(0).withNano(0))) return Issue(Field.TIME, "이미 지난 출발시각입니다. 날짜와 시간을 다시 선택하세요.")
         if (end.isNotEmpty()) {
-            val to = parseTime(end) ?: return "올바른 종료시각을 선택하세요."
-            if (to < from) return "열차 출발 종료시각은 시작시각 이후여야 합니다."
+            val to = parseTime(end) ?: return Issue(Field.TIME, "올바른 종료시각을 선택하세요.")
+            if (to < from) return Issue(Field.TIME, "열차 출발 종료시각은 시작시각 이후여야 합니다.")
         }
-        if (adults !in 1..9) return "성인 인원은 1~9명으로 선택하세요."
-        if (types.isEmpty()) return "열차 종류를 하나 이상 선택하세요."
-        if (checkSelection && onlySelected && trainKeys.isEmpty()) return "좌석 현황에서 감시할 열차를 하나 이상 선택하세요."
-        if (stopAt.isNotEmpty()) {
-            val time = parseTime(stopAt) ?: return "감시 종료시각을 다시 선택하세요."
-            if (checkPast && !time.isAfter(now.toLocalTime())) return "오늘의 감시 종료시각이 이미 지났습니다."
-        }
+        if (adults !in 1..9) return Issue(Field.PASSENGERS, "성인 인원은 1~9명으로 선택하세요.")
+        if (types.isEmpty()) return Issue(Field.TYPES, "열차 종류를 하나 이상 선택하세요.")
+        if (checkSelection && onlySelected && trainKeys.isEmpty()) return Issue(Field.SELECTION, "좌석 현황에서 예약할 열차를 하나 이상 선택하세요.")
+        // A clock time that has already passed today means tomorrow (see deadline), so it is not an error.
+        if (stopAt.isNotEmpty() && parseTime(stopAt) == null) return Issue(Field.STOP, "자동 예약 종료 시각을 다시 선택하세요.")
         return null
+    }
+
+    /** One line for the start button: exactly what a run will book. */
+    fun brief(): String = if (departure.isBlank() || arrival.isBlank()) "출발역과 도착역을 선택하세요." else
+        "$departure → $arrival · ${displayDate(date)} ${displayTime(start)}~${if (end.isBlank()) "" else displayTime(end)} · " +
+            "${seatLabel(seat)} ${adults}명 · ${if (onlySelected) "선택 열차 ${trainKeys.size}개" else "전체 열차"}"
+
+    fun stopLabel(now: LocalDateTime = LocalDateTime.now()): String = when {
+        stopAt.isNotBlank() -> "${if (deadline(now)?.toLocalDate() == now.toLocalDate()) "오늘" else "내일"} ${displayTime(stopAt)}"
+        stopAfterMinutes > 0 -> "시작 ${stopAfterMinutes}분 후"
+        else -> "직접 중지할 때까지"
     }
 
     fun summary(): String = "$departure → $arrival\n${displayDate(date)} · ${displayTime(start)}–${if (end.isBlank()) "이후 전체" else displayTime(end)}\n성인 ${adults}명 · ${seatLabel(seat)} · ${types.joinToString { it.label }}"
@@ -79,7 +95,8 @@ data class ReservationOptions(
     }
 
     fun deadline(now: LocalDateTime = LocalDateTime.now()): LocalDateTime? = when {
-        stopAt.isNotBlank() -> now.toLocalDate().atTime(parseTime(stopAt))
+        // A clock time already behind us means that time tomorrow, so an overnight run can be set in the evening.
+        stopAt.isNotBlank() -> parseTime(stopAt)?.let { time -> now.toLocalDate().atTime(time).let { if (it.isAfter(now)) it else it.plusDays(1) } }
         stopAfterMinutes > 0 -> now.plusMinutes(stopAfterMinutes.toLong())
         else -> null
     }

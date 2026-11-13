@@ -28,6 +28,11 @@ class Prefs(context: Context) {
         get() = sp.getString("lastRunDetail", "").orEmpty()
         set(value) { sp.edit().putString("lastRunDetail", value).apply() }
 
+    /** Repeat the booking-success sound until the user reacts. */
+    var successAlarm: Boolean
+        get() = sp.getBoolean("successAlarm", true)
+        set(value) { sp.edit().putBoolean("successAlarm", value).apply() }
+
     var loginVerified: Boolean
         get() = sp.getBoolean("loginVerified", false)
         set(value) { sp.edit().putBoolean("loginVerified", value).apply() }

@@ -108,7 +108,29 @@ class ReservationOptionsTest {
         assertNull(options.deadline(now))
         assertEquals(now.plusMinutes(30), options.copy(stopAfterMinutes = 30).deadline(now))
         assertEquals(now.withHour(23), options.copy(stopAt = "230000").deadline(now))
-        assertNotNull(options.copy(stopAt = "170000").error(now))
+    }
+    @Test fun stopClockAlreadyPassedMeansTomorrowInsteadOfBlockingTheStart() {
+        val passed = options.copy(stopAt = "170000")
+        assertNull(passed.error(now))
+        assertEquals(now.plusDays(1).withHour(17), passed.deadline(now))
+        assertEquals("내일 17:00", passed.stopLabel(now))
+        assertEquals("오늘 23:00", options.copy(stopAt = "230000").stopLabel(now))
+        assertEquals("시작 30분 후", options.copy(stopAfterMinutes = 30).stopLabel(now))
+        assertEquals("직접 중지할 때까지", options.stopLabel(now))
+        assertEquals(ReservationOptions.Field.STOP, options.copy(stopAt = "bad").issue(now)?.field)
+    }
+    @Test fun issuesNameTheFieldTheyBelongTo() {
+        assertEquals(ReservationOptions.Field.STATIONS, options.copy(arrival = "서울").issue(now)?.field)
+        assertEquals(ReservationOptions.Field.TIME, options.copy(end = "170000").issue(now)?.field)
+        assertEquals(ReservationOptions.Field.TYPES, options.copy(types = emptySet()).issue(now)?.field)
+        assertEquals(ReservationOptions.Field.SELECTION, options.copy(onlySelected = true).issue(now)?.field)
+        assertNull(options.copy(onlySelected = true).issue(now, checkSelection = false))
+    }
+    @Test fun briefNamesRouteWindowSeatAndTarget() {
+        assertEquals("서울 → 부산 · 9월 8일 (화) 18:00~21:00 · 일반실 1명 · 전체 열차", options.brief())
+        assertEquals("서울 → 부산 · 9월 8일 (화) 18:00~ · 특실 2명 · 선택 열차 1개",
+            options.copy(end = "", seat = "2", adults = 2, onlySelected = true, trainKeys = setOf("a")).brief())
+        assertEquals("출발역과 도착역을 선택하세요.", options.copy(departure = "").brief())
     }
     @Test fun optionsRoundTripPreservesSelectionAndStopCondition() {
         val value = options.copy(onlySelected = true, trainKeys = setOf("20260908:100:153:183000"), stopAfterMinutes = 30)

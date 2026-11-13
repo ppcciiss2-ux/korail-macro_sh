@@ -11,9 +11,16 @@
     <!-- 업데이트 화면에서 받은 APK 로 Android 설치 화면을 연다 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- The result screen offers to open KorailTalk for payment -->
+    <queries>
+        <package android:name="com.korail.talk" />
+    </queries>
+
     <application
         android:name=".KorailMacroApp"
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.KorailMacro"
         android:supportsRtl="true">

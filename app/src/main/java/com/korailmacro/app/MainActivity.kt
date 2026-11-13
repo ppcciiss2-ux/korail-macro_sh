@@ -22,6 +22,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
@@ -70,7 +71,6 @@ class MainActivity : AppCompatActivity() {
     private var stateTitle: TextView? = null
     private var stateDetail: TextView? = null
     private var logView: TextView? = null
-    private var readyView: TextView? = null
     private var runStrip: TextView? = null
     private var saveNote: TextView? = null
     private var startError = ""
@@ -91,7 +91,10 @@ class MainActivity : AppCompatActivity() {
     private val running get() = ServiceBus.running.value || busyStarting
 
     private data class SettingsDraft(var type: String, var id: String, var password: String,
-        var token: String, var chat: String, var interval: Int, var theme: Int)
+        var token: String, var chat: String, var interval: Int, var theme: Int, var alarm: Boolean)
+
+    /** Back from any other tab returns to the conditions tab first instead of closing the app. */
+    private val backToHome = object : OnBackPressedCallback(false) { override fun handleOnBackPressed() { showPage("home") } }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -102,8 +105,10 @@ class MainActivity : AppCompatActivity() {
             settingsDraft = SettingsDraft(savedInstanceState.getString("settingsType").orEmpty(),
                 savedInstanceState.getString("settingsId").orEmpty(), savedInstanceState.getString("settingsPassword").orEmpty(),
                 savedInstanceState.getString("settingsToken").orEmpty(), savedInstanceState.getString("settingsChat").orEmpty(),
-                savedInstanceState.getInt("settingsInterval", 5), savedInstanceState.getInt("settingsTheme", ThemePrefs.mode(this)))
+                savedInstanceState.getInt("settingsInterval", 5), savedInstanceState.getInt("settingsTheme", ThemePrefs.mode(this)),
+                savedInstanceState.getBoolean("settingsAlarm", true))
         }
+        onBackPressedDispatcher.addCallback(this, backToHome)
         buildShell()
         showPage(currentPage)
         lifecycleScope.launch {
@@ -114,7 +119,12 @@ class MainActivity : AppCompatActivity() {
                 } }
                 launch { ServiceBus.status.collect { updateStatus() } }
                 launch { ServiceBus.log.collect { logView?.text = it } }
-                launch { ServiceBus.result.collect { if (currentPage == "result") renderPage() } }
+                launch { ServiceBus.result.collect { value ->
+                    // A new booking brings its result to the front once; later visits are the user's choice.
+                    val booked = runCatching { JSONObject(value).optString("createdAt") }.getOrDefault("")
+                    if (booked.isNotBlank() && booked != ServiceBus.seenResult) { ServiceBus.seenResult = booked; showPage("result") }
+                    else if (currentPage == "result") renderPage()
+                } }
                 launch {
                     var lastDay = LocalDate.now()
                     while (true) {
@@ -133,7 +143,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::prefs.isInitialized) { refreshExpiredOptions(); updateReady() }
+        // Re-read permissions too: the battery dialog returns here without restarting the activity.
+        if (::prefs.isInitialized) { refreshExpiredOptions(); if (currentPage == "home") renderPage() }
     }
 
     private fun refreshExpiredOptions() {
@@ -150,7 +161,7 @@ class MainActivity : AppCompatActivity() {
             outState.putString("settingsType", it.type); outState.putString("settingsId", it.id)
             outState.putString("settingsPassword", it.password); outState.putString("settingsToken", it.token)
             outState.putString("settingsChat", it.chat); outState.putInt("settingsInterval", it.interval)
-            outState.putInt("settingsTheme", it.theme)
+            outState.putInt("settingsTheme", it.theme); outState.putBoolean("settingsAlarm", it.alarm)
         }
         super.onSaveInstanceState(outState)
     }
@@ -218,9 +229,14 @@ class MainActivity : AppCompatActivity() {
             saveNote = caption("").apply { gravity = Gravity.CENTER }; footer.add(saveNote!!)
             footer.add(button("설정 저장", true) { saveSettings() }.apply { isEnabled = !settingsBusy })
         } else if (currentPage != "result") {
-            footer.add(if (startError.isNotBlank()) text(startError, 13f).apply { setTextColor(color(R.color.colorError)); gravity = Gravity.CENTER }
-                else caption("빈 좌석 발견 시 자동 예약 · 결제는 직접 진행").apply { gravity = Gravity.CENTER })
-            startButton.text = if (running) "자동 조회 중지" else "자동 예약 시작"
+            // What a run will book, right above the button that starts it.
+            footer.add(if (startError.isNotBlank()) text(startError, 13f).apply {
+                setTextColor(color(R.color.colorError)); gravity = Gravity.CENTER
+                val target = if ("설정" in startError) "settings" else if ("좌석 현황" in startError) "seats" else null
+                if (target != null && target != currentPage) setOnClickListener { showPage(target) }
+            } else caption(if (running) "실행 중 · ${activeOptions().brief()}" else "${options.brief()}\n빈 좌석 발견 시 자동 예약 · 결제는 직접 진행").apply { gravity = Gravity.CENTER })
+            startButton.text = if (running) "자동 예약 중지" else "자동 예약 시작"
+            startButton.backgroundTintList = states(if (running) color(R.color.colorStop) else accent, color(R.color.borderColor))
             startButton.isEnabled = !busyStarting && ServiceBus.status.value.title != "중지 처리 중"
             footer.add(startButton)
         }
@@ -231,7 +247,7 @@ class MainActivity : AppCompatActivity() {
         val d = settingsDraft ?: return false
         return d.type != prefs.loginType || d.id.trim() != prefs.loginId || d.password != prefs.password ||
             d.token.trim() != prefs.telegramToken || d.chat.trim() != prefs.telegramChatId ||
-            d.interval != prefs.pollIntervalSec || d.theme != ThemePrefs.mode(this)
+            d.interval != prefs.pollIntervalSec || d.theme != ThemePrefs.mode(this) || d.alarm != prefs.successAlarm
     }
     private fun updateSaveNote() {
         val dirty = settingsDirty()
@@ -253,7 +269,8 @@ class MainActivity : AppCompatActivity() {
     }
     private fun renderPage() {
         if (!::content.isInitialized) return
-        stateTitle = null; stateDetail = null; logView = null; readyView = null; runStrip = null; saveNote = null
+        stateTitle = null; stateDetail = null; logView = null; runStrip = null; saveNote = null
+        backToHome.isEnabled = currentPage != "home"
         content.removeAllViews()
         tabs.forEach { (key, b) ->
             b.isSelected = key == currentPage
@@ -291,7 +308,13 @@ class MainActivity : AppCompatActivity() {
             stateDetail = caption(""); add(stateDetail!!)
         }
         updateStatus()
+        renderReady()
         if (running) content.add(caption("실행 중에는 조건을 바꿀 수 없습니다. 바꾸려면 먼저 중지하세요.").apply { setPadding(dp(4), 0, dp(4), dp(8)) })
+        // Show a problem next to the field it belongs to, before the user presses start.
+        val issue = if (running) null else options.issue(checkSelection = false)
+        fun LinearLayout.problem(field: ReservationOptions.Field) {
+            if (issue?.field == field) add(text(issue.message, 13f).apply { setTextColor(color(R.color.colorError)) })
+        }
         val editable = column()
         content.add(editable)
         panel(editable) {
@@ -299,6 +322,7 @@ class MainActivity : AppCompatActivity() {
             val arr = button("도착역\n${options.arrival.ifBlank { "선택" }}") { stationPicker(false) }
             row(this, dep, arr)
             add(button("⇄ 출발·도착 교환") { changeOptions(options.copy(departure = options.arrival, arrival = options.departure)) })
+            problem(ReservationOptions.Field.STATIONS)
             divider(this)
             add(caption("가는 날"))
             add(button(ReservationOptions.displayDate(options.date)) { datePicker() })
@@ -308,6 +332,7 @@ class MainActivity : AppCompatActivity() {
                     timePicker(options.end, true) { changeOptions(options.copy(end = it)) }
                 })
             add(caption("‘까지’를 비우면 시작시각 이후 전체 열차를 조회합니다."))
+            problem(ReservationOptions.Field.TIME)
             row(this, button("☆ 조건 저장") { saveFavorite() }, button("즐겨찾기") { loadFavorite() })
         }
         panel(editable) {
@@ -325,10 +350,10 @@ class MainActivity : AppCompatActivity() {
                     setOnCheckedChangeListener { _, checked -> changeOptions(options.copy(types = if (checked) options.types + type else options.types - type)) }
                 }
             }.toTypedArray()) }
+            problem(ReservationOptions.Field.TYPES)
             divider(this)
-            add(caption("자동 조회 중지 · 열차 출발시간과 별개"))
-            val stop = if (options.stopAt.isNotBlank()) "오늘 ${ReservationOptions.displayTime(options.stopAt)}" else if (options.stopAfterMinutes > 0) "시작 ${options.stopAfterMinutes}분 후" else "직접 중지할 때까지"
-            add(button(stop) { choose("감시 종료", listOf("직접 중지", "30분 후", "1시간 후", "오늘 시각 지정")) {
+            add(caption("자동 예약 종료 시점 · 열차 출발시간과 별개"))
+            add(button(options.stopLabel()) { choose("자동 예약 종료 시점", listOf("직접 중지할 때까지", "30분 후", "1시간 후", "시각 지정 (지난 시각은 내일)")) {
                 when (it) {
                     0 -> changeOptions(options.copy(stopAfterMinutes = 0, stopAt = ""), true)
                     1 -> changeOptions(options.copy(stopAfterMinutes = 30, stopAt = ""), true)
@@ -336,20 +361,14 @@ class MainActivity : AppCompatActivity() {
                     else -> timePicker("230000") { time -> changeOptions(options.copy(stopAt = time, stopAfterMinutes = 0), true) }
                 }
             } })
+            problem(ReservationOptions.Field.STOP)
             if (options.onlySelected && options.trainKeys.isEmpty()) {
-                add(text("감시 대상: 선택한 열차 없음 · 이대로는 시작할 수 없습니다.", 13f).apply { setTextColor(color(R.color.colorError)) })
+                add(text("예약 대상: 선택한 열차 없음 · 이대로는 시작할 수 없습니다.", 13f).apply { setTextColor(color(R.color.colorError)) })
                 row(this, button("좌석 현황에서 선택") { showPage("seats") },
                     button("전체 열차로 변경") { changeOptions(options.copy(onlySelected = false), true) })
-            } else add(caption(if (options.onlySelected) "감시 대상: 선택한 열차 ${options.trainKeys.size}개" else "감시 대상: 조건에 맞는 전체 열차"))
+            } else add(caption(if (options.onlySelected) "예약 대상: 선택한 열차 ${options.trainKeys.size}개" else "예약 대상: 조건에 맞는 전체 열차"))
         }
         setEnabledTree(editable, !running)
-        panel {
-            add(text("실행 준비", 16f, true))
-            readyView = caption(""); add(readyView!!)
-            if (!getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) add(button("배터리 최적화 제외 설정") { batterySettings() })
-            if (!NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()) add(button("알림 허용 설정") { notificationSettings() })
-        }
-        updateReady()
         content.add(button(if (logExpanded) "실행 로그 접기" else "실행 로그 펼치기") { logExpanded = !logExpanded; renderPage() })
         if (logExpanded) {
             content.add(button("크게 보기") { showFullLog() })
@@ -361,19 +380,32 @@ class MainActivity : AppCompatActivity() {
         val s = ServiceBus.status.value
         if (busyStarting && s.title == "시작할 수 없음") { busyStarting = false; renderPage(); return }
         val idle = s.title == "시작 대기" // a fresh process: show how the previous run ended
-        stateTitle?.text = if (idle) prefs.lastRunStatus else s.title
+        val title = if (idle) prefs.lastRunStatus else s.title
+        stateTitle?.text = title
+        stateTitle?.setTextColor(when {
+            title == "예약 성공" -> color(R.color.colorSuccess)
+            "오류" in title || "실패" in title || title == "시작할 수 없음" -> color(R.color.colorError)
+            running -> accent
+            else -> ink
+        })
         stateDetail?.text = if (running) "${s.detail}\n적용 조건: ${activeOptions().summary()}"
             else listOf(if (idle) prefs.lastRunDetail else s.detail, "조회 간격 ${prefs.pollIntervalSec}초").filter(String::isNotBlank).joinToString("\n")
         val strip = "● 자동 예약 실행 중 · ${s.title}\n눌러서 상태 보기"
         runStrip?.text = strip
         if (::startButton.isInitialized) startButton.isEnabled = !busyStarting && s.title != "중지 처리 중"
     }
-    private fun updateReady() {
-        readyView?.text = listOf(
-            if (prefs.loginVerified) "로그인 확인 ✓" else "로그인 확인 필요 · 설정에서 확인",
-            if (NotificationManagerCompat.from(this).areNotificationsEnabled()) "알림 허용 ✓" else "알림 권한 필요",
-            if (getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) "배터리 설정 ✓" else "배터리 최적화 제외 필요"
-        ).joinToString("\n")
+    /** Only what is still missing, each as a button that goes straight to the fix. Gone once all are done. */
+    private fun renderReady() {
+        val todo = listOfNotNull<Pair<String, () -> Unit>>(
+            if (prefs.loginVerified) null else "코레일 로그인 확인" to { showPage("settings") },
+            if (NotificationManagerCompat.from(this).areNotificationsEnabled()) null else "알림 허용" to { notificationSettings() },
+            if (getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) null else "배터리 최적화 제외" to { batterySettings() })
+        if (todo.isEmpty()) return
+        panel {
+            add(text("시작 전 준비 ${todo.size}가지", 16f, true))
+            add(caption("눌러서 바로 설정하세요. 모두 끝나면 이 칸은 사라집니다."))
+            todo.forEach { (label, action) -> add(button("$label  ›") { action() }) }
+        }
     }
     private fun setEnabledTree(view: View, enabled: Boolean) {
         view.isEnabled = enabled
@@ -484,16 +516,16 @@ class MainActivity : AppCompatActivity() {
         content.add(text(if (running) "실행 중인 조건으로 조회" else "현재 조건으로 조회", 17f, true))
         content.add(caption((queriedOptions ?: activeOptions()).summary()))
         content.add(button(if (queryBusy) "조회 중…" else "다시 조회") { runQuery() }.apply { isEnabled = !queryBusy })
-        if (queryError.isNotBlank()) content.add(text(queryError).apply { setTextColor(color(R.color.colorError)) })
+        if (queryError.isNotBlank() && queryError != startError) content.add(text(queryError).apply { setTextColor(color(R.color.colorError)) })
         if (queryTime.isNotBlank()) content.add(caption("마지막 조회 $queryTime · ${trains.size}개 열차"))
         if (!queryBusy && queryError.isBlank() && trains.isEmpty()) content.add(text("조건에 맞는 열차가 없습니다."))
         val selection = CheckBox(this).apply {
-            text = "선택한 열차만 감시"; isChecked = activeOptions().onlySelected; minHeight = dp(48); isEnabled = !running && !queryBusy && (queriedOptions != null || options.onlySelected)
+            text = "선택한 열차만 예약"; isChecked = activeOptions().onlySelected; minHeight = dp(48); isEnabled = !running && !queryBusy && (queriedOptions != null || options.onlySelected)
             setOnCheckedChangeListener { _, checked -> changeOptions(options.copy(onlySelected = checked), true) }
         }
         content.add(selection)
-        content.add(caption((if (activeOptions().onlySelected) "${activeOptions().trainKeys.size}개 선택 · 빈 선택으로는 시작할 수 없습니다." else "현재 조건에 맞는 전체 열차를 감시합니다.") +
-            if (running) "\n실행 중에는 감시할 열차를 바꿀 수 없습니다." else ""))
+        content.add(caption((if (activeOptions().onlySelected) "${activeOptions().trainKeys.size}개 선택 · 빈 선택으로는 시작할 수 없습니다." else "현재 조건에 맞는 전체 열차를 예약 대상으로 봅니다.") +
+            if (running) "\n실행 중에는 예약할 열차를 바꿀 수 없습니다." else ""))
         trains.forEach { train -> panel {
             add(text("${train.trainTypeName} ${train.trainNo}", 16f, true))
             add(text("${ReservationOptions.displayTime(train.depTime)} → ${ReservationOptions.displayTime(train.arrTime)}", 23f, true))
@@ -502,7 +534,7 @@ class MainActivity : AppCompatActivity() {
                 text("특실 ${if (train.hasSpecialSeat) "가능" else "매진"}").apply { setTextColor(if (train.hasSpecialSeat) color(R.color.colorSuccess) else muted) })
             val key = ReservationOptions.key(train)
             add(CheckBox(this@MainActivity).apply {
-                text = "이 열차 감시"; minHeight = dp(48); isChecked = key in activeOptions().trainKeys
+                text = "이 열차 예약"; minHeight = dp(48); isChecked = key in activeOptions().trainKeys
                 isEnabled = !running && options.onlySelected
                 setOnCheckedChangeListener { _, checked -> changeOptions(options.copy(trainKeys = if (checked) options.trainKeys + key else options.trainKeys - key), true) }
             })
@@ -523,6 +555,11 @@ class MainActivity : AppCompatActivity() {
             add(button("예약번호 복사") { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("예약번호", result.optString("pnr"))); toast("예약번호를 복사했습니다.") })
             divider(this); add(text("직접 결제가 필요해요", 17f, true))
             add(text("코레일 앱에서 예약 내역과 정확한 결제 기한을 확인하세요."))
+            add(button("코레일톡 열기", true) {
+                val talk = packageManager.getLaunchIntentForPackage("com.korail.talk")
+                runCatching { startActivity(talk ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.korail.talk"))) }
+                    .onFailure { toast("코레일톡을 열 수 없습니다. 직접 실행해 결제하세요.") }
+            })
             add(caption("텔레그램: ${result.optString("telegram")}"))
             add(caption("이 결과는 예약 성공 당시 기록입니다. 이후 결제·취소 상태는 코레일에서 확인하세요."))
         }
@@ -530,7 +567,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderSettings() {
         val draft = settingsDraft ?: SettingsDraft(prefs.loginType, prefs.loginId, prefs.password, prefs.telegramToken, prefs.telegramChatId,
-            prefs.pollIntervalSec, ThemePrefs.mode(this)).also { settingsDraft = it }
+            prefs.pollIntervalSec, ThemePrefs.mode(this), prefs.successAlarm).also { settingsDraft = it }
         panel {
             add(text("코레일 로그인", 17f, true))
             val types = listOf(KorailApi.LOGIN_TYPE_EMAIL, KorailApi.LOGIN_TYPE_MEMBERSHIP, KorailApi.LOGIN_TYPE_PHONE)
@@ -559,6 +596,12 @@ class MainActivity : AppCompatActivity() {
             field(this, "Chat ID", draft.chat, InputType.TYPE_CLASS_TEXT) { draft.chat = it }
             add(button("테스트 알림 보내기") { testTelegram(draft) }.apply { isEnabled = !settingsBusy })
             add(caption(telegramFeedback.ifBlank { "예약 전에 알림 연결을 확인할 수 있습니다." }))
+            divider(this)
+            add(CheckBox(this@MainActivity).apply {
+                text = "예약 성공 시 확인할 때까지 알림음 반복"; isChecked = draft.alarm; minHeight = dp(48)
+                setOnCheckedChangeListener { _, checked -> draft.alarm = checked; updateSaveNote() }
+            })
+            add(caption("결제 기한이 짧아 놓치지 않도록 알림을 열 때까지 소리가 반복됩니다."))
         }
         panel {
             add(text("조회 간격", 17f, true))
@@ -589,6 +632,7 @@ class MainActivity : AppCompatActivity() {
         prefs.loginVerified = verifiedCredentials == credentials || (unchanged && prefs.loginVerified)
         prefs.loginType = credentials.first; prefs.loginId = credentials.second; prefs.password = credentials.third
         prefs.telegramToken = draft.token.trim(); prefs.telegramChatId = draft.chat.trim(); prefs.pollIntervalSec = draft.interval
+        prefs.successAlarm = draft.alarm
         ThemePrefs.setMode(this, draft.theme)
         settingsFeedback = if (running) "저장 완료 · 실행 중인 조회에는 적용되지 않으며 다음 시작부터 적용됩니다." else "설정을 저장했습니다."
         renderPage()

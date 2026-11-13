@@ -58,7 +58,11 @@ class ReservationService : Service() {
         val password = prefs.password
         val notifier = TelegramNotifier(prefs.telegramToken, prefs.telegramChatId)
         val seconds = prefs.pollIntervalSec.coerceAtLeast(1)
+        val repeatSuccessAlarm = prefs.successAlarm
         val deadline = options.deadline()
+        val startedAt = System.currentTimeMillis()
+        var polls = 0
+        fun progress() = "${polls}회 조회 · ${elapsed(System.currentTimeMillis() - startedAt)} 경과"
         stopRequested = false
         ServiceBus.setRunning(true)
         ServiceBus.update("로그인 중", options.summary(), options)
@@ -92,7 +96,7 @@ class ReservationService : Service() {
                     }
                 }
                 while (isActive) {
-                    if (timeExpired()) { endTitle = "감시 종료시각 도달"; endDetail = "설정한 감시 종료시각이 되어 멈췄습니다."; break }
+                    if (timeExpired()) { endTitle = "종료 시각 도달"; endDetail = "설정한 자동 예약 종료 시각이 되어 멈췄습니다."; break }
                     val now = LocalDateTime.now()
                     val day = now.toLocalDate().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)
                     if (options.date < day || (options.date == day && options.end.isNotBlank() &&
@@ -100,10 +104,11 @@ class ReservationService : Service() {
                         endTitle = "열차 출발시간 범위 종료"; endDetail = "조건의 열차 출발시간이 모두 지나 멈췄습니다."; break
                     }
                     try {
-                        ServiceBus.update("빈 좌석 조회 중", "${seconds}초 간격${deadline?.let { " · 감시 종료 ${it.toLocalTime().withSecond(0)}" }.orEmpty()}")
+                        ServiceBus.update("빈 좌석 조회 중", "${progress()} · ${seconds}초 간격${deadline?.let { " · 종료 ${it.toLocalTime().withSecond(0)}" }.orEmpty()}")
+                        polls++
                         val trains = api.searchTrain(options.departure, options.arrival, options.date, options.start, options.adults, options.end)
                         ensureActive()
-                        if (timeExpired()) { endTitle = "감시 종료시각 도달"; endDetail = "설정한 감시 종료시각이 되어 멈췄습니다."; break }
+                        if (timeExpired()) { endTitle = "종료 시각 도달"; endDetail = "설정한 자동 예약 종료 시각이 되어 멈췄습니다."; break }
                         val matching = trains.filter(options::targets)
                         val general = options.seat != KorailApi.SEAT_SPECIAL
                         val special = options.seat != KorailApi.SEAT_GENERAL
@@ -147,7 +152,9 @@ class ReservationService : Service() {
                                 ServiceBus.append(message)
                                 ServiceBus.update("예약 성공", "예약 결과에서 예약번호를 확인하고 직접 결제하세요.")
                                 // Separate ID so removing the ongoing notification preserves the result.
-                                runCatching { getSystemService(NotificationManager::class.java).notify(RESULT_ID, notification("예약 성공 · $pnr · 직접 결제 필요", true)) }
+                                // Payment deadlines are short: keep sounding until the user reacts, unless they turned it off.
+                                runCatching { getSystemService(NotificationManager::class.java).notify(RESULT_ID, notification("예약 성공 · $pnr · 직접 결제 필요", true)
+                                    .also { n -> if (repeatSuccessAlarm) n.flags = n.flags or Notification.FLAG_INSISTENT }) }
                                     .onFailure { ServiceBus.append("휴대폰 알림 표시 실패 · 예약 결과를 확인하세요.") }
                                 result.put("telegram", if (runCatching { notifier.send(message) }.getOrDefault(false)) "전송 완료" else "전송 실패 또는 미설정")
                                 persistResult()
@@ -155,7 +162,7 @@ class ReservationService : Service() {
                                 break
                             }
                         } else ServiceBus.append("빈 좌석 없음 · 대상 열차 ${matching.size}개 확인")
-                        ServiceBus.update("다음 조회 대기", "${seconds}초 후 다시 조회 · 마지막 확인 ${java.time.LocalTime.now().withNano(0)}")
+                        ServiceBus.update("다음 조회 대기", "${progress()} · 마지막 확인 ${java.time.LocalTime.now().withNano(0)} · ${seconds}초 후 다시 조회")
                     } catch (e: CancellationException) { throw e
                     } catch (e: Exception) {
                         if (e is KorailException && e.stopPolling) throw e
@@ -168,7 +175,8 @@ class ReservationService : Service() {
                     }
                     ensureActive()
                     val remaining = deadline?.let { java.time.Duration.between(LocalDateTime.now(), it).toMillis().coerceAtLeast(0) }
-                    getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(ServiceBus.status.value.title, false))
+                    getSystemService(NotificationManager::class.java).notify(NOTIF_ID,
+                        notification("${options.departure} → ${options.arrival} · ${ServiceBus.status.value.title} · ${progress()}", false))
                     delay(minOf(seconds * 1000L, remaining ?: Long.MAX_VALUE))
                 }
             } catch (e: CancellationException) {
@@ -214,7 +222,7 @@ class ReservationService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = NotificationCompat.Builder(this, if (result) CHANNEL_RESULT else if (stopped) CHANNEL_STOPPED else CHANNEL_ONGOING)
             .setContentTitle(if (result) "코레일 예약 결과" else if (stopped) "코레일 자동 예약 종료" else "코레일 자동 예약")
-            .setContentText(text).setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentText(text).setSmallIcon(R.drawable.ic_stat_train)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text)).setContentIntent(open)
             .setAutoCancel(ended).setOngoing(!ended)
         if (!ended) builder.addAction(android.R.drawable.ic_media_pause, "중지", PendingIntent.getService(this, 0,
@@ -233,6 +241,8 @@ class ReservationService : Service() {
         const val RESULT_ID = 1002
         const val CHANNEL_STOPPED = "korail_macro_stopped"
         const val STOPPED_ID = 1003
+
+        fun elapsed(millis: Long): String = (millis / 60_000).let { minutes -> if (minutes < 60) "${minutes}분" else "${minutes / 60}시간 ${minutes % 60}분" }
 
         fun stopMessage(title: String, detail: String, options: ReservationOptions) =
             "자동 예약이 종료됐습니다.\n사유: $title · $detail\n${options.departure} → ${options.arrival} · ${ReservationOptions.displayDate(options.date)}\n다시 시작하려면 앱을 여세요."
