@@ -11,6 +11,7 @@
 ## 명령
 - 테스트와 검사: `./gradlew.bat assemblePreview testDebugUnitTest lintPreview`
 - 기기 테스트: `./gradlew.bat connectedPreviewAndroidTest` (전용 테스트 에뮬레이터에서만)
+  - 에뮬레이터 `korail-test`(Android 14)를 새로 만든 직후에는 알림 권한 팝업 때문에 화면 테스트가 실패합니다. 테스트 앱 두 개를 `adb install -r -t`로 설치하고 `adb shell pm grant com.korailmacro.app.preview android.permission.POST_NOTIFICATIONS` 뒤 `adb shell am instrument -w com.korailmacro.app.preview.test/androidx.test.runner.AndroidJUnitRunner`로 실행합니다.
 - 빌드: `./gradlew.bat assembleDebug`, `./gradlew.bat assembleRelease`
 - 게시: `./scripts/publish-android-update.ps1 -Notes "..."` (사용자가 "배포 시작해"라고 할 때만. 먼저 `-DryRun`)
 
@@ -30,6 +31,10 @@
 - 서명키 `signing/korail-macro.jks`와 서명 비밀번호를 공개 저장소에 그대로 둡니다. 키를 바꾸면 기존 사용자가 앱을 지우고 다시 설치해야 하기 때문입니다. 다른 앱에 이 키를 쓰지 않습니다. (2026-10-26, 2026-11-05 재확인)
 
 - 인증서 회귀 테스트는 인증서 파일 없이 구성하고, 2.0.2는 게시 후 휴대폰 확인을 진행합니다. (2026-11-14 사용자 승인)
+- UI 개선은 `main`과 분리된 `ui-improvements` 브랜치에 모읍니다. `main`은 서버 변경·인증서 만료 같은 2.0.x 핫픽스 전용으로 두고, UI 묶음은 사용자가 지시할 때만 `main`에 합칩니다. (2026-11-14)
+- 새 버전 확인은 지금처럼 [설정] → [업데이트]를 누를 때만 합니다. (2026-11-14)
+- 앱으로 돌아올 때 지난 날짜·시각을 현재로 고치고 열차 선택을 초기화하는 동작은 그대로 둡니다. (2026-11-14)
+- 화면 확인용 에뮬레이터를 이 PC에 설치해 써도 됩니다. (2026-11-14)
 
 ## 현재 상태
 - 목표: 2.0.2 인증서 교체 대응 배포 완료, 사용자 휴대폰 확인 대기
@@ -37,3 +42,11 @@
 - 확인한 것: 자동 검사·preview/release 빌드, 실제 TLS 및 익명 조회, 별도 보안 검토, 기존 APK 서명, 공식 스크립트 게시, 공개 JSON 2.0.2/20002 및 APK SHA-256
 - 확인하지 못한 것: 최종 2.0.2의 사용자 휴대폰 로그인·조회·예약 (게시 후 확인을 사용자 승인)
 - 다음 할 일: 사용자가 설정→업데이트에서 설치 후 결과를 알려주면 해당 버전·커밋과 함께 기록
+
+### UI 개선 (`ui-improvements`, `main`과 별도)
+- 목표: 화면 사용성 개선 1~3차. 버전 번호는 올리지 않았고 게시하지 않음
+- 담당 도구, 브랜치: Claude Code, `fix/ui-safety` → `ui-improvements`
+- 1차에서 한 것: 인원·등급 변경 시 열차 선택 유지와 해제 안내, 스스로 끝날 때 알림·텔레그램과 종료 이유 표시, 잠긴 버튼 흐림 표시, 좌석 현황에서 시작·중지, 로그인 확인 시 계정 저장과 저장 안 된 설정 표시
+- 확인한 것: `assemblePreview testDebugUnitTest lintPreview` 통과, 에뮬레이터 화면 테스트 15개 통과, 예매 조건·좌석 현황·설정 화면 캡처
+- 확인하지 못한 것: 실제 계정이 필요한 실행 중 화면(잠긴 조건, 실행 중 표시 줄), 종료 알림과 텔레그램 전송
+- 다음 할 일: 사용자가 테스트 앱으로 위 항목 확인 → 2차(성공 알림 강화, 시작 전 조건 요약, 뒤로가기, 감시 종료시각 등)
