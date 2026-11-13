@@ -768,7 +768,9 @@ class MainActivity : AppCompatActivity() {
     private fun field(parent: LinearLayout, label: String, value: String, type: Int, secret: Boolean = false, update: (String) -> Unit) {
         parent.add(caption(label))
         val edit = EditText(this).apply {
-            contentDescription = label; inputType = type; setSingleLine(); textSize = 16f; minHeight = dp(48)
+            // setSingleLine() must come first: called after a password input type it swaps the masking
+            // for a plain single-line transformation and the password is shown as typed.
+            contentDescription = label; setSingleLine(); inputType = type; textSize = 16f; minHeight = dp(48)
             setText(value); addTextChangedListener(watcher { update(it); updateSaveNote() })
         }
         parent.add(edit)

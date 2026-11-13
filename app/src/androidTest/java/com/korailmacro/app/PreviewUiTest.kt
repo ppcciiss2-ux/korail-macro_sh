@@ -8,6 +8,7 @@ import androidx.test.espresso.action.ViewActions.scrollTo
 import androidx.test.espresso.assertion.ViewAssertions.doesNotExist
 import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
+import androidx.test.espresso.matcher.ViewMatchers.withContentDescription
 import androidx.test.espresso.matcher.ViewMatchers.withSubstring
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -200,6 +201,21 @@ class PreviewUiTest {
             onView(withText("★ 퇴근")).perform(scrollTo(), click())
             assertEquals("대전", prefs.draft.departure)
             assertEquals("동대구", prefs.draft.arrival)
+        }
+    }
+    @Test fun passwordAndTokenAreMaskedUntilShown() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("설정")).perform(click())
+            fun masked(label: String, expected: Boolean) = onView(withContentDescription(label)).perform(scrollTo()).check { view, missing ->
+                if (missing != null) throw missing
+                assertEquals(label, expected, (view as android.widget.EditText).transformationMethod is android.text.method.PasswordTransformationMethod)
+            }
+            masked("비밀번호", true)
+            masked("텔레그램 봇 토큰", true)
+            onView(withText("비밀번호 보기")).perform(scrollTo(), click())
+            masked("비밀번호", false)
+            onView(withText("비밀번호 보기")).perform(scrollTo(), click())
+            masked("비밀번호", true)
         }
     }
     @Test fun passengerEditKeepsSelectedTrains() {
