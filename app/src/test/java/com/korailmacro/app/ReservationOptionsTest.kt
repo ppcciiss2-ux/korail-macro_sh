@@ -80,6 +80,26 @@ class ReservationOptionsTest {
         assertFalse(selected.copy(trainKeys = emptySet()).targets(train()))
         assertTrue(options.targets(train(no = "157")))
     }
+    @Test fun passengerAndSeatEditsKeepSelectedTrains() {
+        val selected = options.copy(onlySelected = true, trainKeys = setOf("a", "b"))
+        assertEquals(selected.copy(adults = 2), options.copy(adults = 2).carrySelection(selected))
+        assertEquals(setOf("a", "b"), selected.copy(seat = "2").carrySelection(selected).trainKeys)
+    }
+    @Test fun editsThatChangeTheTrainListDropKeysButNeverFallBackToAllTrains() {
+        val selected = options.copy(onlySelected = true, trainKeys = setOf("a"))
+        listOf(selected.copy(departure = "용산"), selected.copy(arrival = "대전"), selected.copy(date = "20260909"),
+            selected.copy(start = "190000"), selected.copy(end = ""), selected.copy(types = setOf(TrainType.MUGUNGHWA))).forEach { edited ->
+            val carried = edited.carrySelection(selected)
+            assertTrue(carried.onlySelected)
+            assertTrue(carried.trainKeys.isEmpty())
+            assertNotNull(carried.error(now))
+        }
+    }
+    @Test fun editsWithoutSelectionModeStayOnAllTrains() {
+        val carried = options.copy(adults = 3, onlySelected = true, trainKeys = setOf("stale")).carrySelection(options)
+        assertFalse(carried.onlySelected)
+        assertTrue(carried.trainKeys.isEmpty())
+    }
     @Test fun selectionKeysIncludeDateAndDepartureTime() {
         assertNotEquals(ReservationOptions.key(train()), ReservationOptions.key(train(date = "20260909")))
         assertNotEquals(ReservationOptions.key(train()), ReservationOptions.key(train("190000")))

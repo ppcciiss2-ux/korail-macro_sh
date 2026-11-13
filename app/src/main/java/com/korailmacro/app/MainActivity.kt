@@ -136,6 +136,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshExpiredOptions() {
         val updated = options.refreshed(LocalDateTime.now(), running)
         if (updated == options) return
+        options = updated // refreshed() already reset the selection; this date·time correction keeps that behavior
         changeOptions(updated)
         toast("지난 예매 조건을 현재 날짜·시간으로 변경했습니다.")
     }
@@ -227,10 +228,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun changeOptions(value: ReservationOptions, keepSelection: Boolean = false) {
-        options = if (keepSelection) value else value.copy(onlySelected = false, trainKeys = emptySet())
+        val next = if (keepSelection) value else value.carrySelection(options)
+        val dropped = if (keepSelection) 0 else options.trainKeys.size - next.trainKeys.size
+        options = next
         prefs.draft = options
         if (!keepSelection) { queriedOptions = null; trains = emptyList(); queryTime = ""; queryError = "" }
         renderPage()
+        if (dropped > 0) toast("조건이 바뀌어 선택한 열차 ${dropped}개가 해제됐습니다. 좌석 현황에서 다시 선택하세요.")
     }
     private fun activeOptions() = if (ServiceBus.running.value) ServiceBus.status.value.options ?: options else options
     private fun renderHome() {
@@ -284,7 +288,11 @@ class MainActivity : AppCompatActivity() {
                     else -> timePicker("230000") { time -> changeOptions(options.copy(stopAt = time, stopAfterMinutes = 0), true) }
                 }
             } })
-            add(caption(if (options.onlySelected) "감시 대상: 선택한 열차 ${options.trainKeys.size}개" else "감시 대상: 조건에 맞는 전체 열차"))
+            if (options.onlySelected && options.trainKeys.isEmpty()) {
+                add(text("감시 대상: 선택한 열차 없음 · 이대로는 시작할 수 없습니다.", 13f).apply { setTextColor(color(R.color.colorError)) })
+                row(this, button("좌석 현황에서 선택") { showPage("seats") },
+                    button("전체 열차로 변경") { changeOptions(options.copy(onlySelected = false), true) })
+            } else add(caption(if (options.onlySelected) "감시 대상: 선택한 열차 ${options.trainKeys.size}개" else "감시 대상: 조건에 맞는 전체 열차"))
         }
         setEnabledTree(editable, !running)
         panel {
@@ -428,7 +436,7 @@ class MainActivity : AppCompatActivity() {
         if (queryTime.isNotBlank()) content.add(caption("마지막 조회 $queryTime · ${trains.size}개 열차"))
         if (!queryBusy && queryError.isBlank() && trains.isEmpty()) content.add(text("조건에 맞는 열차가 없습니다."))
         val selection = CheckBox(this).apply {
-            text = "선택한 열차만 감시"; isChecked = activeOptions().onlySelected; minHeight = dp(48); isEnabled = !running && !queryBusy && queriedOptions != null
+            text = "선택한 열차만 감시"; isChecked = activeOptions().onlySelected; minHeight = dp(48); isEnabled = !running && !queryBusy && (queriedOptions != null || options.onlySelected)
             setOnCheckedChangeListener { _, checked -> changeOptions(options.copy(onlySelected = checked), true) }
         }
         content.add(selection)

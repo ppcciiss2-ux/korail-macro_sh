@@ -67,6 +67,17 @@ data class ReservationOptions(
 
     fun targets(train: Train): Boolean = includes(train) && (!onlySelected || key(train) in trainKeys)
 
+    /** True when [other] lists the same trains, so a selection made on that list is still valid. */
+    fun sameTrainList(other: ReservationOptions): Boolean = departure == other.departure && arrival == other.arrival &&
+        date == other.date && start == other.start && end == other.end && types == other.types
+
+    /** Carry "selected trains only" over a form edit. It must never fall back to all trains silently. */
+    fun carrySelection(previous: ReservationOptions): ReservationOptions = when {
+        !previous.onlySelected -> copy(onlySelected = false, trainKeys = emptySet())
+        sameTrainList(previous) -> copy(onlySelected = true, trainKeys = previous.trainKeys)
+        else -> copy(onlySelected = true, trainKeys = emptySet())
+    }
+
     fun deadline(now: LocalDateTime = LocalDateTime.now()): LocalDateTime? = when {
         stopAt.isNotBlank() -> now.toLocalDate().atTime(parseTime(stopAt))
         stopAfterMinutes > 0 -> now.plusMinutes(stopAfterMinutes.toLong())
