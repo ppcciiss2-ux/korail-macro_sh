@@ -4,6 +4,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.action.ViewActions.scrollTo
+import androidx.test.espresso.assertion.ViewAssertions.doesNotExist
 import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.withText
@@ -44,10 +45,10 @@ class PreviewUiTest {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             onView(withText("설정")).perform(click())
             onView(withText("1초")).perform(scrollTo(), click())
-            onView(withText("설정 저장")).perform(scrollTo(), click())
+            onView(withText("설정 저장")).perform(click()) // fixed bottom bar, no longer inside the scrolling page
             assertEquals(1, prefs.pollIntervalSec)
             onView(withText("3초")).perform(scrollTo(), click())
-            onView(withText("설정 저장")).perform(scrollTo(), click())
+            onView(withText("설정 저장")).perform(click())
             scenario.recreate()
             assertEquals(3, prefs.pollIntervalSec)
         }
@@ -78,8 +79,49 @@ class PreviewUiTest {
             onView(withText("1초")).perform(scrollTo(), click())
             scenario.recreate()
             assertEquals(5, prefs.pollIntervalSec)
-            onView(withText("설정 저장")).perform(scrollTo(), click())
+            onView(withText("설정 저장")).perform(click())
             assertEquals(1, prefs.pollIntervalSec)
+        }
+    }
+    @Test fun unsavedSettingsAreMarkedUntilSaved() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("설정")).perform(click())
+            onView(withText("1초")).perform(scrollTo(), click())
+            onView(withText("저장하지 않은 변경이 있습니다.")).check(matches(isDisplayed()))
+            onView(withText("설정 •")).check(matches(isDisplayed()))
+            onView(withText("설정 저장")).perform(click())
+            onView(withText("설정을 저장했습니다.")).check(matches(isDisplayed()))
+            onView(withText("설정")).check(matches(isDisplayed()))
+        }
+    }
+    @Test fun startButtonIsAvailableOnSeatsTab() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("좌석 현황")).perform(click())
+            onView(withText("자동 예약 시작")).check(matches(isDisplayed()))
+            onView(withText("예약 결과")).perform(click())
+            onView(withText("자동 예약 시작")).check(doesNotExist())
+        }
+    }
+    @Test fun routeEditDropsSelectedTrainsWithoutFallingBackToAllTrains() {
+        prefs.draft = prefs.draft.copy(onlySelected = true, trainKeys = setOf("selected"))
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("⇄ 출발·도착 교환")).perform(scrollTo(), click())
+            assertEquals(true, prefs.draft.onlySelected)
+            assertEquals(emptySet<String>(), prefs.draft.trainKeys)
+            onView(withText("자동 예약 시작")).perform(click())
+            onView(withText("좌석 현황에서 감시할 열차를 하나 이상 선택하세요.")).check(matches(isDisplayed()))
+            assertEquals(false, ServiceBus.running.value)
+            onView(withText("전체 열차로 변경")).perform(scrollTo(), click())
+            assertEquals(false, prefs.draft.onlySelected)
+        }
+    }
+    @Test fun passengerEditKeepsSelectedTrains() {
+        prefs.draft = prefs.draft.copy(onlySelected = true, trainKeys = setOf("selected"))
+        ActivityScenario.launch(MainActivity::class.java).use {
+            onView(withText("성인 1명")).perform(scrollTo(), click())
+            onView(withText("2명")).perform(click())
+            assertEquals(2, prefs.draft.adults)
+            assertEquals(setOf("selected"), prefs.draft.trainKeys)
         }
     }
 }
