@@ -23,6 +23,11 @@ class Prefs(context: Context) {
         get() = sp.getString("lastRunStatus", "시작 대기").orEmpty()
         set(value) { sp.edit().putString("lastRunStatus", value).apply() }
 
+    /** Why the last run ended by itself; blank after a user stop or a booking. */
+    var lastRunDetail: String
+        get() = sp.getString("lastRunDetail", "").orEmpty()
+        set(value) { sp.edit().putString("lastRunDetail", value).apply() }
+
     var loginVerified: Boolean
         get() = sp.getBoolean("loginVerified", false)
         set(value) { sp.edit().putBoolean("loginVerified", value).apply() }
