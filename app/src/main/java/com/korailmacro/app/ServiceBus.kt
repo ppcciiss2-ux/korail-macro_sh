@@ -25,7 +25,7 @@ object ServiceBus {
     fun append(line: String) {
         lines.addLast("${java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"))}  $line")
         while (lines.size > 300) lines.removeFirst()
-        _log.value = lines.joinToString("\n")
+        _log.value = lines.asReversed().joinToString("\n")
     }
 
     fun setRunning(value: Boolean) {

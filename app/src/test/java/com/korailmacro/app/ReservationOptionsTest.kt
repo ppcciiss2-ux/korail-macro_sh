@@ -100,6 +100,17 @@ class ReservationOptionsTest {
         assertFalse(carried.onlySelected)
         assertTrue(carried.trainKeys.isEmpty())
     }
+    @Test fun tappingTrainsSelectsThemAndClearingTheLastReturnsToAllTrains() {
+        val one = options.toggleTrain("a")
+        assertTrue(one.onlySelected)
+        assertEquals(setOf("a"), one.trainKeys)
+        assertEquals(setOf("a", "b"), one.toggleTrain("b").trainKeys)
+        val none = one.toggleTrain("a")
+        assertFalse(none.onlySelected)
+        assertTrue(none.trainKeys.isEmpty())
+        // After a condition change dropped the selection, one tap makes the run startable again.
+        assertNull(options.copy(onlySelected = true).toggleTrain("a").error(now))
+    }
     @Test fun selectionKeysIncludeDateAndDepartureTime() {
         assertNotEquals(ReservationOptions.key(train()), ReservationOptions.key(train(date = "20260909")))
         assertNotEquals(ReservationOptions.key(train()), ReservationOptions.key(train("190000")))
