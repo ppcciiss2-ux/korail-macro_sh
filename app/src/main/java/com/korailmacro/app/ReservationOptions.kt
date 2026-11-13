@@ -94,6 +94,10 @@ data class ReservationOptions(
         else -> copy(onlySelected = true, trainKeys = emptySet())
     }
 
+    /** Tapping a train selects it; with nothing selected every matching train is a target again. */
+    fun toggleTrain(key: String): ReservationOptions = (if (key in trainKeys) trainKeys - key else trainKeys + key)
+        .let { copy(trainKeys = it, onlySelected = it.isNotEmpty()) }
+
     fun deadline(now: LocalDateTime = LocalDateTime.now()): LocalDateTime? = when {
         // A clock time already behind us means that time tomorrow, so an overnight run can be set in the evening.
         stopAt.isNotBlank() -> parseTime(stopAt)?.let { time -> now.toLocalDate().atTime(time).let { if (it.isAfter(now)) it else it.plusDays(1) } }

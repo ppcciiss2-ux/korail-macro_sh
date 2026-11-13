@@ -9,6 +9,8 @@ object ThemePrefs {
 
     fun mode(context: Context): Int {
         val p = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // A fresh install follows the phone; only installs that chose the old dark switch keep it.
+        if (!p.contains("mode") && !p.contains(KEY_DARK_MODE)) return androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
         return p.getInt("mode", if (p.getBoolean(KEY_DARK_MODE, true))
             androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES else androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO)
     }
