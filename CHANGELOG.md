@@ -6,6 +6,12 @@ v1.1부터는 고정 서명 키를 쓰므로 앱 삭제 없이 덮어쓰기 업�
 
 ---
 
+## v2.0.2 (versionCode 20002) — 인증서 교체 대응
+
+- 코레일 서버의 새 GlobalSign GCC R46 OV TLS CA 2025 중간 인증서 공개키 핀을 추가.
+- 기존 인증서 핀, Android의 신뢰 체인·호스트 이름 검증을 유지.
+- 2.0.1에서 발생한 Certificate pinning failure 재현 및 무관한 인증서 거절 테스트 추가.
+
 ## v2.0.1 (versionCode 20001) — 통신 호환성 및 연결 진단
 
 - 고정 `2!` 진단 헤더를 SDK 2.0.1 소프트웨어 선언 토큰으로 교체(pykorail a9ceed7 참조).
