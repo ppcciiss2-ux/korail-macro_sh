@@ -1,7 +1,6 @@
 package com.korailmacro.app.korail
 
 import java.util.Base64
-import okhttp3.CertificatePinner
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.FormBody
@@ -163,18 +162,6 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
             Triple(8, "1", "173")  // 안내견
         )
 
-        // Pinned leaf + issuing CA + root for smart.letskorail.com (fetched 2026-08-17).
-        // Pinning all three means the leaf cert renewing on its normal schedule won't
-        // break the app (the CA/root pins still match) — only a switch to a wholly
-        // different CA, or an actual MITM, would trip this and fail the connection.
-        private val KORAIL_CERT_PINNER = CertificatePinner.Builder()
-            .add(
-                "smart.letskorail.com",
-                "sha256/+aKPhqKL0hOK1/1r5KYM4uKXDQ5kSOf5/2iSbcLtNms=", // leaf, expires 2026-11-21
-                "sha256/hETpgVvaLC0bvcGG3t0cuqiHvr4XyP2MTwCiqhgRWwU=", // GlobalSign RSA OV SSL CA 2018
-                "sha256/cGuxAXyFXFkWm61cF4HPWX8S0srS9j0aSqN0k4AP+4A="  // GlobalSign Root CA - R3
-            )
-            .build()
     }
 
     private val client = OkHttpClient.Builder()
@@ -182,7 +169,7 @@ class KorailApi internal constructor(private val transport: okhttp3.Call.Factory
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
-        .certificatePinner(KORAIL_CERT_PINNER)
+        .certificatePinner(KorailTlsPolicy.pinner)
         .retryOnConnectionFailure(false)
         .followRedirects(false)
         .followSslRedirects(false)
