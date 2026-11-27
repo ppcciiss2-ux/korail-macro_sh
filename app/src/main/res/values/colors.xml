@@ -10,4 +10,5 @@
     <color name="textSecondary">#6B7280</color>
     <color name="colorSuccess">#1E8E3E</color>
     <color name="colorError">#B3261E</color>
+    <color name="colorStop">#C62828</color>
 </resources>

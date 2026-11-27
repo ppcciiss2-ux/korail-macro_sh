@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Theme.KorailMacro" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
@@ -9,5 +9,10 @@
         <item name="android:textColorHint">@color/textSecondary</item>
         <item name="colorControlNormal">@color/textSecondary</item>
         <item name="colorControlActivated">@color/colorAccent</item>
+        <!-- System bars blend into the page instead of a separate dark blue band -->
+        <item name="android:statusBarColor">@color/bgColor</item>
+        <item name="android:navigationBarColor">@color/bgColor</item>
+        <item name="android:windowLightStatusBar">@bool/lightSystemBars</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">@bool/lightSystemBars</item>
     </style>
 </resources>

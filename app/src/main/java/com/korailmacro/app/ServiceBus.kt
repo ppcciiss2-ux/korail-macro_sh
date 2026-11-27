@@ -8,6 +8,8 @@ object ServiceBus {
     data class Status(val title: String = "시작 대기", val detail: String = "", val options: ReservationOptions? = null)
     val status = MutableStateFlow(Status())
     val result = MutableStateFlow("")
+    /** createdAt of the booking the screen has already brought to the front. */
+    @Volatile var seenResult = ""
     fun update(title: String, detail: String = "", options: ReservationOptions? = status.value.options) {
         status.value = Status(title, detail, options)
     }
@@ -23,7 +25,7 @@ object ServiceBus {
     fun append(line: String) {
         lines.addLast("${java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"))}  $line")
         while (lines.size > 300) lines.removeFirst()
-        _log.value = lines.joinToString("\n")
+        _log.value = lines.asReversed().joinToString("\n")
     }
 
     fun setRunning(value: Boolean) {
